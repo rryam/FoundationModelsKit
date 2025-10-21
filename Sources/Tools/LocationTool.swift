@@ -80,6 +80,7 @@ public struct LocationTool: Tool {
   }
 
   private let locationManager = CLLocationManager()
+  @MainActor private lazy var currentLocationFetcher = CurrentLocationFetcher()
 
   public init() {
     locationManager.desiredAccuracy = kCLLocationAccuracyBest
@@ -141,7 +142,7 @@ public struct LocationTool: Tool {
 
   @MainActor
   private func requestLiveLocation(timeout: TimeInterval = 8) async throws -> CLLocation {
-    try await CurrentLocationFetcher().requestLocation(using: locationManager, timeout: timeout)
+    try await currentLocationFetcher.requestLocation(using: locationManager, timeout: timeout)
   }
 
   private func buildCurrentLocationContent(
@@ -546,11 +547,12 @@ final class CurrentLocationFetcher: NSObject, @MainActor CLLocationManagerDelega
       #endif
 
       timeoutTask = Task { [weak self, weak manager] in
-        try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-        guard let manager else { return }
-        await MainActor.run {
-          guard let self else { return }
+        do {
+          try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+          guard let self, let manager else { return }
           self.handleTimeout(manager: manager)
+        } catch {
+          // Task cancelled; cleanup already handled elsewhere.
         }
       }
     }
