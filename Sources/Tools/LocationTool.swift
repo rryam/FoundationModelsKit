@@ -81,7 +81,10 @@ public struct LocationTool: Tool {
 
   private let locationManager = CLLocationManager()
 
-  public init() {}
+  public init() {
+    locationManager.desiredAccuracy = kCLLocationAccuracyBest
+    locationManager.distanceFilter = kCLDistanceFilterNone
+  }
 
   public func call(arguments: Arguments) async throws -> some PromptRepresentable {
     switch arguments.action.lowercased() {
@@ -101,42 +104,79 @@ public struct LocationTool: Tool {
   }
 
   private func getCurrentLocation() async -> GeneratedContent {
-    // Check authorization status using the centralized method
-    let authResult = checkLocationAuthorization()
-    
-    if !authResult.isAuthorized {
-      // If permission is not determined, request it
-      if locationManager.authorizationStatus == .notDetermined {
+    let authorization = await checkLocationAuthorization()
+
+    if !authorization.isAuthorized {
+      if authorization.status == .notDetermined {
         return await requestLocationPermission()
       }
-      // Return the appropriate error or permission request result
-      return authResult.result ?? createErrorOutput(error: LocationError.authorizationDenied)
+
+      if let message = authorization.result {
+        return message
+      }
+
+      return createErrorOutput(error: LocationError.authorizationDenied)
     }
 
-    // Get current location
-    guard let location = locationManager.location else {
-      return createErrorOutput(error: LocationError.locationUnavailable)
-    }
+    do {
+      let location = try await requestLiveLocation()
+      return await buildCurrentLocationContent(from: location, source: .live)
+    } catch {
+      if let cached = await cachedLocation() {
+        return await buildCurrentLocationContent(from: cached, source: .cached)
+      }
 
-    // Reverse geocode to get address using new MapKit API
-    guard let request = MKReverseGeocodingRequest(location: location) else {
-      return createErrorOutput(error: LocationError.reverseGeocodingFailed)
-    }
-    let mapItems = try? await request.mapItems
-    let mapItem = mapItems?.first
+      if let locationError = error as? LocationError {
+        return createErrorOutput(error: locationError)
+      }
 
-    let address = formatAddress(mapItem: mapItem)
+      return createErrorOutput(error: error)
+    }
+  }
+
+  @MainActor
+  private func cachedLocation() -> CLLocation? {
+    locationManager.location
+  }
+
+  @MainActor
+  private func requestLiveLocation(timeout: TimeInterval = 8) async throws -> CLLocation {
+    try await CurrentLocationFetcher().requestLocation(using: locationManager, timeout: timeout)
+  }
+
+  private func buildCurrentLocationContent(
+    from location: CLLocation,
+    source: LocationResultSource
+  ) async -> GeneratedContent {
+    let mapItem = await reverseGeocode(location: location)
+    let details = addressDetails(from: mapItem, fallbackLocation: location)
 
     return GeneratedContent(properties: [
       "status": "success",
+      "source": source.identifier,
       "latitude": location.coordinate.latitude,
       "longitude": location.coordinate.longitude,
       "altitude": location.altitude,
       "accuracy": location.horizontalAccuracy,
-      "address": address,
       "timestamp": formatDate(location.timestamp),
-      "message": "Current location: \(address)",
+      "address": details.displayName,
+      "message": source.message(for: details.displayName),
+      "street": details.street ?? "",
+      "city": details.city ?? "",
+      "region": details.region ?? "",
+      "postalCode": details.postalCode ?? "",
+      "country": details.country ?? "",
+      "isoCountryCode": details.isoCountryCode ?? "",
+      "note": source.note ?? "",
     ])
+  }
+
+  private func reverseGeocode(location: CLLocation) async -> MKMapItem? {
+    guard let request = MKReverseGeocodingRequest(location: location) else {
+      return nil
+    }
+
+    return try? await request.mapItems.first
   }
 
   private func geocodeAddress(address: String?) async -> GeneratedContent {
@@ -154,20 +194,22 @@ public struct LocationTool: Tool {
         return createErrorOutput(error: LocationError.geocodingFailed)
       }
 
+      let details = addressDetails(from: mapItem, fallbackLocation: mapItem.location)
       let location = mapItem.location
-      let formattedAddress = formatAddress(mapItem: mapItem)
 
       return GeneratedContent(properties: [
         "status": "success",
         "query": address,
         "latitude": location.coordinate.latitude,
         "longitude": location.coordinate.longitude,
-        "formattedAddress": formattedAddress,
-        "country": "",  // These would need to be extracted from addressRepresentations
-        "state": "",
-        "city": "",
-        "postalCode": "",
-        "message": "Location found: \(formattedAddress)",
+        "formattedAddress": details.displayName,
+        "country": details.country ?? "",
+        "state": details.region ?? "",
+        "city": details.city ?? "",
+        "street": details.street ?? "",
+        "postalCode": details.postalCode ?? "",
+        "isoCountryCode": details.isoCountryCode ?? "",
+        "message": "Location found: \(details.displayName)",
       ])
     } catch {
       return createErrorOutput(error: error)
@@ -193,18 +235,20 @@ public struct LocationTool: Tool {
         return createErrorOutput(error: LocationError.reverseGeocodingFailed)
       }
 
-      let address = formatAddress(mapItem: mapItem)
+      let details = addressDetails(from: mapItem, fallbackLocation: location)
+      let address = details.displayName
 
       return GeneratedContent(properties: [
         "status": "success",
         "latitude": latitude,
         "longitude": longitude,
         "address": address,
-        "country": "",  // These would need to be extracted from addressRepresentations
-        "state": "",
-        "city": "",
-        "street": "",
-        "postalCode": "",
+        "country": details.country ?? "",
+        "state": details.region ?? "",
+        "city": details.city ?? "",
+        "street": details.street ?? "",
+        "postalCode": details.postalCode ?? "",
+        "isoCountryCode": details.isoCountryCode ?? "",
         "message": "Address: \(address)",
       ])
     } catch {
@@ -312,16 +356,7 @@ public struct LocationTool: Tool {
   }
 
   private func formatAddress(mapItem: MKMapItem?) -> String {
-    guard let mapItem = mapItem else { return "Unknown location" }
-
-    // Use name if available
-    if let name = mapItem.name {
-      return name
-    }
-
-    // Fallback to coordinates
-    let location = mapItem.location
-    return "Lat: \(location.coordinate.latitude), Lon: \(location.coordinate.longitude)"
+    addressDetails(from: mapItem, fallbackLocation: mapItem?.location).displayName
   }
 
   private func formatDistance(_ meters: Double) -> String {
@@ -400,45 +435,243 @@ public struct LocationTool: Tool {
   }
   
   /// Checks if location authorization is sufficient for the current platform
-  /// - Returns: A tuple with authorization status and whether location access is available
-  private func checkLocationAuthorization() -> (isAuthorized: Bool, result: GeneratedContent?) {
-    let authStatus = locationManager.authorizationStatus
-    
-    #if os(visionOS)
-      if authStatus == .authorizedWhenInUse {
-        return (true, nil)
-      }
-    #elseif os(iOS) || os(visionOS)
-      if authStatus == .authorizedWhenInUse || authStatus == .authorizedAlways {
-        return (true, nil)
+  @MainActor
+  private func checkLocationAuthorization() -> AuthorizationResult {
+    let status = locationManager.authorizationStatus
+
+    guard CLLocationManager.locationServicesEnabled() else {
+      return AuthorizationResult(
+        status: status,
+        isAuthorized: false,
+        result: createErrorOutput(error: LocationError.locationServicesDisabled)
+      )
+    }
+
+    #if os(iOS) || os(visionOS)
+      if status == .authorizedAlways || status == .authorizedWhenInUse {
+        return AuthorizationResult(status: status, isAuthorized: true, result: nil)
       }
     #elseif os(macOS)
-      if authStatus == .authorizedAlways {
-        return (true, nil)
+      if status == .authorizedAlways {
+        return AuthorizationResult(status: status, isAuthorized: true, result: nil)
       }
     #else
-      if authStatus == .authorizedWhenInUse || authStatus == .authorizedAlways {
-        return (true, nil)
+      if status == .authorizedAlways || status == .authorizedWhenInUse {
+        return AuthorizationResult(status: status, isAuthorized: true, result: nil)
       }
     #endif
-    
-    // Handle not determined status
-    if authStatus == .notDetermined {
-      return (false, GeneratedContent(properties: [
-        "status": "permission_requested",
-        "message": "Location permission requested. Please allow location access in the system alert and try again.",
-        "instruction": "After granting permission, please run this tool again to get your location.",
-      ]))
+
+    if status == .notDetermined {
+      return AuthorizationResult(status: status, isAuthorized: false, result: nil)
     }
-    
-    // Permission denied
-    return (false, createErrorOutput(error: LocationError.authorizationDenied))
+
+    return AuthorizationResult(
+      status: status,
+      isAuthorized: false,
+      result: createErrorOutput(error: LocationError.authorizationDenied)
+    )
   }
+}
+
+private struct AuthorizationResult {
+  let status: CLAuthorizationStatus
+  let isAuthorized: Bool
+  let result: GeneratedContent?
+}
+
+private enum LocationResultSource {
+  case live
+  case cached
+
+  func message(for address: String) -> String {
+    switch self {
+    case .live:
+      return "Current location: \(address)"
+    case .cached:
+      return "Last known location: \(address)"
+    }
+  }
+
+  var note: String? {
+    switch self {
+    case .live:
+      return nil
+    case .cached:
+      return "Using last known location while waiting for a precise update."
+    }
+  }
+
+  var identifier: String {
+    switch self {
+    case .live:
+      return "live"
+    case .cached:
+      return "cached"
+    }
+  }
+}
+
+private struct AddressDetails {
+  let displayName: String
+  let street: String?
+  let city: String?
+  let region: String?
+  let postalCode: String?
+  let country: String?
+  let isoCountryCode: String?
+}
+
+@MainActor
+final class CurrentLocationFetcher: NSObject, @MainActor CLLocationManagerDelegate {
+  private var continuation: CheckedContinuation<CLLocation, Error>?
+  private var timeoutTask: Task<Void, Never>?
+
+  @MainActor
+  func requestLocation(
+    using manager: CLLocationManager,
+    timeout: TimeInterval = 8
+  ) async throws -> CLLocation {
+    if continuation != nil {
+      throw LocationError.operationInProgress
+    }
+
+    return try await withCheckedThrowingContinuation { continuation in
+      self.continuation = continuation
+      manager.delegate = self
+
+      #if os(macOS)
+        manager.startUpdatingLocation()
+      #else
+        manager.requestLocation()
+      #endif
+
+      timeoutTask = Task { [weak self, weak manager] in
+        try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+        guard let manager else { return }
+        await MainActor.run {
+          guard let self else { return }
+          self.handleTimeout(manager: manager)
+        }
+      }
+    }
+  }
+
+  @MainActor
+  func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    guard let location = locations.last else { return }
+    if let continuation = cleanup(manager: manager) {
+      continuation.resume(returning: location)
+    }
+  }
+
+  @MainActor
+  func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    if let continuation = cleanup(manager: manager) {
+      continuation.resume(throwing: error)
+    }
+  }
+
+  @MainActor
+  private func handleTimeout(manager: CLLocationManager) {
+    guard let continuation = cleanup(manager: manager) else { return }
+    continuation.resume(throwing: LocationError.locationTimeout)
+  }
+
+  @MainActor
+  private func cleanup(manager: CLLocationManager)
+    -> CheckedContinuation<CLLocation, Error>? {
+    timeoutTask?.cancel()
+    timeoutTask = nil
+    #if os(macOS)
+      manager.stopUpdatingLocation()
+    #endif
+    manager.delegate = nil
+    let continuation = self.continuation
+    self.continuation = nil
+    return continuation
+  }
+}
+
+private func addressDetails(
+  from mapItem: MKMapItem?,
+  fallbackLocation: CLLocation?
+) -> AddressDetails {
+  guard let placemark = mapItem?.placemark else {
+    if let location = fallbackLocation {
+      return AddressDetails(
+        displayName: coordinateDescription(for: location),
+        street: nil,
+        city: nil,
+        region: nil,
+        postalCode: nil,
+        country: nil,
+        isoCountryCode: nil
+      )
+    }
+
+    return AddressDetails(
+      displayName: "Unknown location",
+      street: nil,
+      city: nil,
+      region: nil,
+      postalCode: nil,
+      country: nil,
+      isoCountryCode: nil
+    )
+  }
+
+  let streetComponents = [placemark.subThoroughfare, placemark.thoroughfare]
+    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty }
+  let street =
+    streetComponents.isEmpty ? nil : streetComponents.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+
+  let city = placemark.locality?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let region = (placemark.administrativeArea ?? placemark.subAdministrativeArea)?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  let postalCode = placemark.postalCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let country = placemark.country?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let isoCountryCode = placemark.isoCountryCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+  var components: [String] = []
+  if let street { components.append(street) }
+  if let city, !city.isEmpty { components.append(city) }
+  if let region, !region.isEmpty { components.append(region) }
+  if let country, !country.isEmpty { components.append(country) }
+
+  var displayName = components.joined(separator: ", ")
+  if displayName.isEmpty {
+    if let name = mapItem?.name, !name.isEmpty {
+      displayName = name
+    } else if let location = fallbackLocation {
+      displayName = coordinateDescription(for: location)
+    } else {
+      displayName = "Unknown location"
+    }
+  }
+
+  return AddressDetails(
+    displayName: displayName,
+    street: street,
+    city: city,
+    region: region,
+    postalCode: postalCode,
+    country: country,
+    isoCountryCode: isoCountryCode
+  )
+}
+
+private func coordinateDescription(for location: CLLocation) -> String {
+  String(
+    format: "%.4f, %.4f",
+    location.coordinate.latitude,
+    location.coordinate.longitude
+  )
 }
 
 // Helper function to format map item address
 private func formatMapItemAddress(_ mapItem: MKMapItem) -> String? {
-  return mapItem.name
+  addressDetails(from: mapItem, fallbackLocation: mapItem.location).displayName
 }
 
 extension Double {
@@ -450,7 +683,10 @@ enum LocationError: Error, LocalizedError {
   case invalidAction
   case authorizationDenied
   case authorizationNotDetermined
+  case locationServicesDisabled
   case locationUnavailable
+  case locationTimeout
+  case operationInProgress
   case missingAddress
   case missingCoordinates
   case missingSearchQuery
@@ -465,8 +701,14 @@ enum LocationError: Error, LocalizedError {
       return "Location access denied. Please grant permission in Settings."
     case .authorizationNotDetermined:
       return "Location permission not yet determined. Please grant permission when prompted."
+    case .locationServicesDisabled:
+      return "Location services are disabled. Enable Location Services to continue."
     case .locationUnavailable:
       return "Current location is unavailable."
+    case .locationTimeout:
+      return "Timed out while waiting for an updated location."
+    case .operationInProgress:
+      return "A location request is already in progress."
     case .missingAddress:
       return "Address is required for geocoding."
     case .missingCoordinates:
