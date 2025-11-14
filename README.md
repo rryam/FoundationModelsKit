@@ -695,7 +695,7 @@ let trimmedEntries = transcript.entriesWithinTokenBudget(maxTokens)
 let newTranscript = Transcript(trimmedEntries)
 
 // The trimmed transcript:
-// - Always includes the first instructions entry
+// - Includes the first instructions entry if it fits within the budget
 // - Includes as many recent entries as possible within budget
 // - Preserves conversation recency
 ```
@@ -719,7 +719,7 @@ print("Content tokens: \(contentTokens)")
 
 1. **Use Safe Estimates:** Always use `safeEstimatedTokenCount` for critical decisions to account for estimation variance
 2. **Set Conservative Thresholds:** Default 70% threshold provides buffer for response generation
-3. **Preserve Instructions:** The sliding window always keeps system instructions for consistency
+3. **Preserve Instructions:** The sliding window attempts to keep the first system instructions entry for consistency, provided it fits within the token budget
 4. **Monitor Long Conversations:** Check token counts periodically in chat applications
 
 #### Example: Chat with Token Management
@@ -732,6 +732,10 @@ class ChatManager {
     private var transcript = Transcript()
     private let maxTokens = 4096
     private let threshold = 0.7
+
+    init(systemInstructions: String) {
+        transcript = Transcript([.instructions(systemInstructions)])
+    }
 
     func addMessage(_ message: String) async throws -> String {
         // Add user message

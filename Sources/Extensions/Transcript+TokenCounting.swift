@@ -37,6 +37,14 @@ private extension Sequence where Element == Transcript.Segment {
   }
 }
 
+private extension Transcript.Entry {
+  /// Returns true if this entry is an instructions entry
+  var isInstruction: Bool {
+    guard case .instructions = self else { return false }
+    return true
+  }
+}
+
 extension Transcript.Entry {
   /// Estimates the token count for this transcript entry.
   ///
@@ -157,7 +165,7 @@ extension Transcript {
   /// Returns a subset of entries that fit within the specified token budget.
   ///
   /// This method implements a sliding window approach:
-  /// 1. Always includes the first instructions entry (if present)
+  /// 1. Includes the first instructions entry (if present and it fits within the budget)
   /// 2. Adds the most recent entries that fit within the budget
   /// 3. Preserves conversation recency while respecting token limits
   ///
@@ -175,7 +183,7 @@ extension Transcript {
     var recentEntriesToKeep: [Transcript.Entry] = []
 
     // 1. Find the first instruction
-    let firstInstruction = self.first { if case .instructions = $0 { true } else { false } }
+    let firstInstruction = self.first(where: \.isInstruction)
 
     if let instruction = firstInstruction {
       let instructionTokens = instruction.estimatedTokenCount
@@ -187,7 +195,7 @@ extension Transcript {
 
     // 2. Iterate backwards through non-instructions and collect what fits in the remaining budget
     for entry in self.reversed() {
-      if case .instructions = entry { continue }
+      if entry.isInstruction { continue }
 
       let entryTokens = entry.estimatedTokenCount
       if tokenCount + entryTokens <= budget {
