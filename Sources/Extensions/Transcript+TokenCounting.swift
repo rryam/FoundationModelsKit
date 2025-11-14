@@ -20,7 +20,22 @@ private let safetyBufferMultiplier = 0.25
 /// System overhead in tokens for context window calculations
 private let systemOverheadTokens = 100
 
+/// Tool call overhead in tokens
+private let toolCallOverheadTokens = 5
+
+/// Tool output overhead in tokens
+private let toolOutputOverheadTokens = 3
+
 // MARK: - Token Counting Extensions
+
+// MARK: - Private Helpers
+
+private extension Sequence where Element == Transcript.Segment {
+  /// Sums the estimated token count across all segments
+  var totalEstimatedTokenCount: Int {
+    reduce(0) { $0 + $1.estimatedTokenCount }
+  }
+}
 
 extension Transcript.Entry {
   /// Estimates the token count for this transcript entry.
@@ -34,22 +49,22 @@ extension Transcript.Entry {
   public var estimatedTokenCount: Int {
     switch self {
     case .instructions(let instructions):
-      return instructions.segments.reduce(0) { $0 + $1.estimatedTokenCount }
+      return instructions.segments.totalEstimatedTokenCount
 
     case .prompt(let prompt):
-      return prompt.segments.reduce(0) { $0 + $1.estimatedTokenCount }
+      return prompt.segments.totalEstimatedTokenCount
 
     case .response(let response):
-      return response.segments.reduce(0) { $0 + $1.estimatedTokenCount }
+      return response.segments.totalEstimatedTokenCount
 
     case .toolCalls(let toolCalls):
       return toolCalls.reduce(0) { total, call in
         total + estimateTokens(from: call.toolName) +
-        estimateTokens(from: call.arguments) + 5  // Call overhead
+        estimateTokens(from: call.arguments) + toolCallOverheadTokens
       }
 
     case .toolOutput(let output):
-      return output.segments.reduce(0) { $0 + $1.estimatedTokenCount } + 3  // Output overhead
+      return output.segments.totalEstimatedTokenCount + toolOutputOverheadTokens
 
     @unknown default:
       // Return 0 for unknown entry types to avoid crashes
@@ -156,33 +171,37 @@ extension Transcript {
   /// let newTranscript = Transcript(trimmed)
   /// ```
   public func entriesWithinTokenBudget(_ budget: Int) -> [Transcript.Entry] {
-    var result: [Transcript.Entry] = []
     var tokenCount = 0
+    var recentEntriesToKeep: [Transcript.Entry] = []
 
-    // Always include instructions if present
-    if let instructions = self.first(where: {
-      if case .instructions = $0 { return true }
-      return false
-    }) {
-      result.append(instructions)
-      tokenCount += instructions.estimatedTokenCount
+    // 1. Find the first instruction
+    let firstInstruction = self.first { if case .instructions = $0 { true } else { false } }
+
+    if let instruction = firstInstruction {
+      let instructionTokens = instruction.estimatedTokenCount
+      // Only account for the instruction if it fits the budget
+      if instructionTokens <= budget {
+        tokenCount = instructionTokens
+      }
     }
 
-    // Add most recent entries that fit
-    let nonInstructionEntries = self.filter { entry in
-      if case .instructions = entry { return false }
-      return true
-    }
+    // 2. Iterate backwards through non-instructions and collect what fits in the remaining budget
+    for entry in self.reversed() {
+      if case .instructions = entry { continue }
 
-    let insertionIndex = result.isEmpty ? 0 : 1
-    for entry in nonInstructionEntries.reversed() {
       let entryTokens = entry.estimatedTokenCount
-      if tokenCount + entryTokens > budget { break }
-
-      result.insert(entry, at: insertionIndex)
-      tokenCount += entryTokens
+      if tokenCount + entryTokens <= budget {
+        tokenCount += entryTokens
+        recentEntriesToKeep.append(entry)
+      }
     }
 
+    // 3. Assemble the final list in chronological order
+    var result: [Transcript.Entry] = []
+    if let instruction = firstInstruction, instruction.estimatedTokenCount <= budget {
+      result.append(instruction)
+    }
+    result.append(contentsOf: recentEntriesToKeep.reversed())
     return result
   }
 }

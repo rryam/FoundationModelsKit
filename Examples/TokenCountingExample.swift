@@ -96,6 +96,7 @@ class ChatManager {
   private var transcript = Transcript()
   private let maxTokens = 4096
   private let threshold = 0.7
+  private let historyTokenBudgetPercentage = 0.6
 
   init(systemInstructions: String) {
     transcript = Transcript([.instructions(systemInstructions)])
@@ -112,7 +113,7 @@ class ChatManager {
       print("⚠️ Approaching token limit, trimming context...")
 
       // Trim to fit budget (leaving room for response)
-      let budget = Int(Double(maxTokens) * 0.6)  // Use 60% for history
+      let budget = Int(Double(maxTokens) * historyTokenBudgetPercentage)
       let trimmedEntries = transcript.entriesWithinTokenBudget(budget)
       transcript = Transcript(trimmedEntries)
 
