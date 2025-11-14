@@ -3,7 +3,7 @@ workflows:
     name: Build and Test FoundationModelsTools
     max_build_duration: 60
     environment:
-      xcode: latest
+      xcode: 26.0
       cocoapods: default
     triggering:
       events:
@@ -13,6 +13,12 @@ workflows:
         - pattern: '*'
           include: true
     scripts:
+      - name: Install SwiftLint
+        script: |
+          brew install swiftlint
+      - name: Run SwiftLint
+        script: |
+          swiftlint
       - name: Build Swift Package
         script: |
           swift build -c release
