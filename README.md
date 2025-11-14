@@ -22,6 +22,8 @@ A collection of tools and utilities for Apple's Foundation Models Framework that
   - [WeatherTool](#weathertool)
   - [WebMetadataTool](#webmetadatatool)
   - [WebTool](#webtool)
+- [Utilities](#utilities)
+  - [Token Counting](#token-counting)
 - [Usage Examples](#usage-examples)
   - [Direct Tool Usage](#direct-tool-usage)
   - [Model Integration](#model-integration)
@@ -35,7 +37,7 @@ A collection of tools and utilities for Apple's Foundation Models Framework that
 
 ## Overview
 
-**FoundationModelsTools** provides a set of pre-built tools that extend the capabilities of models using Apple's Foundation Models Framework. These tools allow you to:
+**FoundationModelsTools** provides a set of pre-built tools and utilities that extend the capabilities of models using Apple's Foundation Models Framework. These tools allow you to:
 
 - Access and manage calendar events
 - Read and create contacts
@@ -46,6 +48,7 @@ A collection of tools and utilities for Apple's Foundation Models Framework that
 - Fetch weather information
 - Extract metadata from web pages
 - Search the web using Exa
+- Manage context windows with token counting utilities
 
 ## Features
 
@@ -630,6 +633,132 @@ let keywordResults = try await webTool.call(arguments: keywordArgs)
 - `status`: "success" or "error"
 - `results`: Array of search results with titles, URLs, and snippets
 - `count`: Number of results returned
+
+## Utilities
+
+### Token Counting
+
+FoundationModelsTools provides comprehensive token counting and context window management utilities for `Transcript` objects. These utilities help you prevent context overflow and manage long conversations effectively.
+
+#### Features
+
+**Estimation Methods:**
+- `estimatedTokenCount` - Basic token counting using Apple's 4.5 characters per token ratio
+- `safeEstimatedTokenCount` - Conservative estimate with 25% buffer + 100 token overhead
+
+**Context Management:**
+- `isApproachingLimit(threshold:maxTokens:)` - Check if approaching context limits
+- `entriesWithinTokenBudget(_:)` - Sliding window implementation for long conversations
+
+#### Basic Token Counting
+
+```swift
+import FoundationModels
+import FoundationModelsTools
+
+let transcript = Transcript([
+    .instructions("You are a helpful assistant"),
+    .prompt("What's the weather like?"),
+    .response("The weather is sunny and 72°F")
+])
+
+// Get token estimate
+let tokens = transcript.estimatedTokenCount
+print("Estimated tokens: \(tokens)")
+
+// Get safe estimate with buffer
+let safeTokens = transcript.safeEstimatedTokenCount
+print("Safe estimate: \(safeTokens)")
+```
+
+#### Context Window Management
+
+```swift
+// Check if approaching limit (default: 70% of 4096 tokens)
+if transcript.isApproachingLimit() {
+    print("Warning: Approaching context limit")
+}
+
+// Custom threshold and max tokens
+if transcript.isApproachingLimit(threshold: 0.8, maxTokens: 8192) {
+    print("Using 80% threshold with 8K token limit")
+}
+```
+
+#### Sliding Window for Long Conversations
+
+When conversations exceed token limits, use `entriesWithinTokenBudget(_:)` to maintain recent context:
+
+```swift
+let maxTokens = 2000
+let trimmedEntries = transcript.entriesWithinTokenBudget(maxTokens)
+let newTranscript = Transcript(trimmedEntries)
+
+// The trimmed transcript:
+// - Includes the first instructions entry if it fits within the budget
+// - Includes as many recent entries as possible within budget
+// - Preserves conversation recency
+```
+
+#### Token Estimation Functions
+
+For standalone text or structured content:
+
+```swift
+// Estimate tokens from text
+let textTokens = estimateTokens(from: "Hello, world!")
+print("Text tokens: \(textTokens)")
+
+// Estimate tokens from GeneratedContent
+let content = GeneratedContent(...)
+let contentTokens = estimateTokens(from: content)
+print("Content tokens: \(contentTokens)")
+```
+
+#### Best Practices
+
+1. **Use Safe Estimates:** Always use `safeEstimatedTokenCount` for critical decisions to account for estimation variance
+2. **Set Conservative Thresholds:** Default 70% threshold provides buffer for response generation
+3. **Preserve Instructions:** The sliding window attempts to keep the first system instructions entry for consistency, provided it fits within the token budget
+4. **Monitor Long Conversations:** Check token counts periodically in chat applications
+
+#### Example: Chat with Token Management
+
+```swift
+import FoundationModels
+import FoundationModelsTools
+
+class ChatManager {
+    private var transcript = Transcript()
+    private let maxTokens = 4096
+    private let threshold = 0.7
+
+    init(systemInstructions: String) {
+        transcript = Transcript([.instructions(systemInstructions)])
+    }
+
+    func addMessage(_ message: String) async throws -> String {
+        // Add user message
+        transcript.append(.prompt(message))
+
+        // Check if we're approaching the limit
+        if transcript.isApproachingLimit(threshold: threshold, maxTokens: maxTokens) {
+            // Trim to fit budget (leaving room for response)
+            let budget = Int(Double(maxTokens) * 0.6) // Use 60% for history
+            let trimmedEntries = transcript.entriesWithinTokenBudget(budget)
+            transcript = Transcript(trimmedEntries)
+            print("Trimmed transcript to \(transcript.estimatedTokenCount) tokens")
+        }
+
+        // Generate response with managed context
+        let session = LanguageModelSession(model: .instant)
+        let response = try await session.generate(from: transcript)
+        transcript.append(.response(response))
+
+        return response.text
+    }
+}
+```
 
 ## Usage Examples
 
