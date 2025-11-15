@@ -636,7 +636,7 @@ let keywordResults = try await webTool.call(arguments: keywordArgs)
 
 ## Utilities
 
-### Token Counting
+### Token Counting (WORK IN PROGRESS)
 
 FoundationModelsTools provides comprehensive token counting and context window management utilities for `Transcript` objects. These utilities help you prevent context overflow and manage long conversations effectively.
 
