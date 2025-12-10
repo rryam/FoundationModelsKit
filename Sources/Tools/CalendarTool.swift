@@ -187,7 +187,9 @@ public struct CalendarTool: Tool {
   private func queryEvents(arguments: Arguments) throws -> GeneratedContent {
     let startDate = Date()
     let daysToQuery = arguments.daysAhead ?? 7
-    let endDate = Calendar.current.date(byAdding: .day, value: daysToQuery, to: startDate)!
+    guard let endDate = Calendar.current.date(byAdding: .day, value: daysToQuery, to: startDate) else {
+      return createErrorOutput(error: CalendarError.invalidEndDate)
+    }
 
     let calendars = eventStore.calendars(for: .event)
 
