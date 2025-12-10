@@ -241,7 +241,7 @@ public struct RemindersTool: Tool {
     var remindersDescription = ""
 
     for (index, reminder) in reminders.enumerated() {
-      let completed = reminder.isCompleted ? "" : ""
+      let completed = reminder.isCompleted ? "[x]" : "[ ]"
       let priority = getPriorityString(reminder.priority)
       let dueDate = formatDateComponents(reminder.dueDateComponents)
       let list = reminder.calendar?.title ?? "Unknown List"

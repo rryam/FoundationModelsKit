@@ -22,8 +22,6 @@ final class ExaWebService: Sendable {
       throw ExaWebServiceError.invalidURL
     }
 
-    print("🔍 ExaWebService: Starting search for query: '\(query)'")
-
     let requestBody = ExaSearchRequest(
       query: query,
       type: "auto",
@@ -39,12 +37,9 @@ final class ExaWebService: Sendable {
 
     do {
       request.httpBody = try JSONEncoder().encode(requestBody)
-    } catch {
-      print("❌ ExaWebService: Failed to encode request body")
-      throw ExaWebServiceError.encodingError
+    } catch let underlyingError {
+      throw ExaWebServiceError.encodingError(underlyingError)
     }
-
-    print("🌐 ExaWebService: Making request to: \(url.absoluteString)")
 
     let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -52,29 +47,15 @@ final class ExaWebService: Sendable {
       throw ExaWebServiceError.invalidResponse
     }
 
-    print("📡 ExaWebService: Response status code: \(httpResponse.statusCode)")
-
     guard httpResponse.statusCode == 200 else {
-      if let errorString = String(data: data, encoding: .utf8) {
-        print("❌ ExaWebService: Error response: \(errorString)")
-      }
-      throw ExaWebServiceError.apiError(statusCode: httpResponse.statusCode)
-    }
-
-    print("✅ ExaWebService: Successfully received response (\(data.count) bytes)")
-
-    // Debug: Print first 500 characters of response
-    if let responseString = String(data: data, encoding: .utf8) {
-      print("📄 ExaWebService: Response preview: \(responseString.prefix(500))...")
+      throw ExaWebServiceError.apiError(statusCode: httpResponse.statusCode, responseData: data)
     }
 
     do {
       let searchResponse = try JSONDecoder().decode(ExaSearchResponse.self, from: data)
-      print("🔍 ExaWebService: Successfully parsed \(searchResponse.results.count) results")
       return searchResponse
-    } catch {
-      print("❌ ExaWebService: Failed to decode response: \(error)")
-      throw ExaWebServiceError.decodingError
+    } catch let underlyingError {
+      throw ExaWebServiceError.decodingError(underlyingError)
     }
   }
 }
@@ -180,24 +161,25 @@ struct ExaPerPagePrices: Codable {
 
 enum ExaWebServiceError: Error, LocalizedError {
   case invalidURL
-  case encodingError
+  case encodingError(Error)
   case invalidResponse
-  case apiError(statusCode: Int)
-  case decodingError
+  case apiError(statusCode: Int, responseData: Data?)
+  case decodingError(Error)
   case missingAPIKey
 
   var errorDescription: String? {
     switch self {
     case .invalidURL:
       return "Invalid Exa API URL"
-    case .encodingError:
-      return "Failed to encode request data"
+    case .encodingError(let underlyingError):
+      return "Failed to encode request data: \(underlyingError.localizedDescription)"
     case .invalidResponse:
       return "Invalid response from Exa API"
-    case .apiError(let statusCode):
-      return "Exa API error (Status: \(statusCode))"
-    case .decodingError:
-      return "Failed to decode Exa API response"
+    case .apiError(let statusCode, let responseData):
+      let responseString = responseData.flatMap { String(data: $0, encoding: .utf8) } ?? "No response body"
+      return "Exa API error (Status: \(statusCode)): \(responseString)"
+    case .decodingError(let underlyingError):
+      return "Failed to decode Exa API response: \(underlyingError.localizedDescription)"
     case .missingAPIKey:
       return "Exa API key is required"
     }

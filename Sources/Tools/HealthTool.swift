@@ -449,7 +449,7 @@ public struct HealthTool: Tool {
         "dataType": "distance",
         "totalKilometers": String(format: "%.2f", kilometers),
         "totalMiles": String(format: "%.2f", miles),
-        "dailyAverageKm": String(format: ".$2f", dailyAverage),
+        "dailyAverageKm": String(format: "%.2f", dailyAverage),
         "startDate": formatDate(startDate),
         "endDate": formatDate(endDate),
         "message": "Total distance: \(String(format: "%.2f", kilometers)) km"

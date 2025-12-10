@@ -314,12 +314,6 @@ public struct MusicTool: Tool {
     }
   }
 
-  private func formatDuration(_ duration: TimeInterval) -> String {
-    let minutes = Int(duration) / 60
-    let seconds = Int(duration) % 60
-    return String(format: "%d:%02d", minutes, seconds)
-  }
-
   private func createErrorOutput(error: Error) -> GeneratedContent {
     return GeneratedContent(properties: [
       "status": "error",
