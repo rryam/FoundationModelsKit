@@ -9,10 +9,26 @@ import Foundation
 import FoundationModels
 import HealthKit
 
-/// `HealthTool` provides read access to HealthKit data.
+/// A tool for reading health data from HealthKit.
 ///
-/// This tool can read health data from the Health app including steps, heart rate, workouts, and more.
-/// Important: This requires HealthKit entitlements and user permission.
+/// Use `HealthTool` for read-only access to various health metrics including
+/// steps, heart rate, workouts, sleep, active energy, and walking/running distance.
+///
+/// The following data types are supported:
+/// - `steps`: Daily step count
+/// - `heartRate`: Heart rate measurements
+/// - `workouts`: Workout sessions
+/// - `sleep`: Sleep analysis data
+/// - `activeEnergy`: Active calories burned
+/// - `distance`: Walking and running distance
+///
+/// ```swift
+/// let session = LanguageModelSession(tools: [HealthTool()])
+/// let response = try await session.respond(to: "How many steps did I take this week?")
+/// ```
+///
+/// - Important: Requires HealthKit capability, `NSHealthShareUsageDescription` in Info.plist,
+///   and user permission at runtime for each data type.
 public struct HealthTool: Tool {
 
   /// The name of the tool, used for identification.

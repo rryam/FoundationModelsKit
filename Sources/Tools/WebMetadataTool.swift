@@ -9,10 +9,21 @@ import Foundation
 import FoundationModels
 import LinkPresentation
 
-/// `WebMetadataTool` extracts and provides metadata from web pages.
+/// A tool for extracting metadata from web pages using LinkPresentation.
 ///
-/// This tool fetches web page content and extracts basic metadata like title, description, and images.
-/// Important: Requires network access to fetch web page content.
+/// Use `WebMetadataTool` to fetch and extract metadata from URLs including
+/// page title and image availability. No API key is required.
+///
+/// Returns `url`, `title`, `description` (currently empty due to API limitations),
+/// and `imageURL` (indicates if an image is available).
+///
+/// ```swift
+/// let session = LanguageModelSession(tools: [WebMetadataTool()])
+/// let response = try await session.respond(to: "Summarize this page: https://apple.com")
+/// ```
+///
+/// - Note: Description extraction is not available through public API.
+///   Image data is detected but not returned directly.
 public struct WebMetadataTool: Tool {
 
   /// The name of the tool, used for identification.
@@ -76,7 +87,10 @@ public struct WebMetadataTool: Tool {
 
   private func extractBasicMetadata(from metadata: LPLinkMetadata, url: URL) -> WebMetadata {
     let title = metadata.title ?? "Untitled"
-    let description = metadata.value(forKey: "_summary") as? String ?? ""
+    // Note: LPLinkMetadata does not expose a public API for page description/summary.
+    // The description field will be empty. Consider using alternative approaches like
+    // fetching and parsing the HTML meta description tag directly if needed.
+    let description = ""
     let imageURL = metadata.imageProvider != nil ? "Image available" : nil
 
     return WebMetadata(

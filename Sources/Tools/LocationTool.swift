@@ -10,10 +10,25 @@ import Foundation
 import FoundationModels
 @preconcurrency import MapKit
 
-/// `LocationTool` provides location services and geocoding functionality.
+/// A tool for location services and geocoding using CoreLocation and MapKit.
 ///
-/// This tool can get current location, geocode addresses, and calculate distances.
-/// Important: This requires location services entitlement and user permission.
+/// Use `LocationTool` to access current location, geocoding, reverse geocoding,
+/// place search, and distance calculations between coordinates.
+///
+/// The following actions are supported:
+/// - `current`: Get the device's current location
+/// - `geocode`: Convert an address to coordinates
+/// - `reverse`: Convert coordinates to an address
+/// - `search`: Search for nearby places
+/// - `distance`: Calculate distance between two coordinate pairs
+///
+/// ```swift
+/// let session = LanguageModelSession(tools: [LocationTool()])
+/// let response = try await session.respond(to: "Where is Apple Park located?")
+/// ```
+///
+/// - Important: Requires Location Services capability, `NSLocationWhenInUseUsageDescription`
+///   in Info.plist, and user permission at runtime.
 public struct LocationTool: Tool {
 
   /// The name of the tool, used for identification.

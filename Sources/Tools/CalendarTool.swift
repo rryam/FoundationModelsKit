@@ -9,10 +9,24 @@
 import Foundation
 import FoundationModels
 
-/// `CalendarTool` provides access to calendar events.
+/// A tool for managing calendar events using EventKit.
 ///
-/// This tool can create, read, and query calendar events.
-/// Important: This requires the Calendar entitlement and user permission.
+/// Use `CalendarTool` to create, read, query, and update calendar events.
+/// It integrates with the system Calendar app and requires appropriate permissions.
+///
+/// The following actions are supported:
+/// - `create`: Create a new calendar event
+/// - `query`: Query upcoming events within a date range
+/// - `read`: Read details of a specific event by ID
+/// - `update`: Update an existing event
+///
+/// ```swift
+/// let session = LanguageModelSession(tools: [CalendarTool()])
+/// let response = try await session.respond(to: "Create a meeting tomorrow at 2pm")
+/// ```
+///
+/// - Important: Requires Calendar entitlement, `NSCalendarsUsageDescription` in Info.plist,
+///   and user permission at runtime.
 public struct CalendarTool: Tool {
 
   /// The name of the tool, used for identification.

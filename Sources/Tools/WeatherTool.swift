@@ -14,12 +14,19 @@ import Foundation
 import FoundationModels
 import MapKit
 
-/// `WeatherTool` is a utility that provides real-time weather information for cities
-/// using the OpenMeteo API.
+/// A tool for fetching real-time weather information using the OpenMeteo API.
 ///
-/// This tool fetches the latest weather data, including temperature, humidity, wind speed,
-/// and more, for a specified city. It uses geocoding to resolve city names to coordinates
-/// and then queries the OpenMeteo API for current weather conditions.
+/// Use `WeatherTool` to get current weather conditions for any city worldwide.
+/// It uses geocoding to resolve city names to coordinates and queries the
+/// free OpenMeteo API for weather data. No API key is required.
+///
+/// Returns temperature, condition, humidity, wind speed, feels-like temperature,
+/// pressure, and precipitation data.
+///
+/// ```swift
+/// let session = LanguageModelSession(tools: [WeatherTool()])
+/// let response = try await session.respond(to: "What's the weather in San Francisco?")
+/// ```
 public struct WeatherTool: Tool {
 
   /// The name of the tool, used for identification.

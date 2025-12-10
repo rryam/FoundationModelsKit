@@ -9,10 +9,23 @@ import Foundation
 import FoundationModels
 import SwiftUI
 
-/// `WebTool` provides web search and research capabilities using Exa.
+/// A tool for web search using the Exa API.
 ///
-/// This tool can search the web for relevant content and information.
-/// Important: This requires an Exa API key set in environment variables.
+/// Use `WebTool` for neural and keyword search capabilities for finding
+/// relevant web content. It uses Exa's powerful search API.
+///
+/// Search types include `neural` (semantic search), `keyword` (traditional search),
+/// and `auto` (automatically selects the best type).
+///
+/// ```swift
+/// // Configure the API key using @AppStorage("exaAPIKey")
+/// let session = LanguageModelSession(tools: [WebTool()])
+/// let response = try await session.respond(to: "Search for the latest ML advancements")
+/// ```
+///
+/// - Important: Requires an Exa API key stored in `@AppStorage("exaAPIKey")`.
+///   Do not store API keys in client-side code for production apps.
+///   Use a server-side proxy to make Exa API requests securely.
 public struct WebTool: Tool {
 
   /// The name of the tool, used for identification.

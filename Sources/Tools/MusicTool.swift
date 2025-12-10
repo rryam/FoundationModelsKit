@@ -9,10 +9,27 @@ import Foundation
 import FoundationModels
 import MusicKit
 
-/// `MusicTool` provides access to Apple Music functionality.
+/// A tool for controlling Apple Music playback using MusicKit.
 ///
-/// This tool can play, pause, search for music, and control playback.
-/// Important: This requires Apple Music access and user permission.
+/// Use `MusicTool` for search, playback control, and now playing information
+/// for Apple Music content.
+///
+/// The following actions are supported:
+/// - `search`: Search the Apple Music catalog
+/// - `play`: Play a song by ID or search query
+/// - `pause`: Pause current playback
+/// - `stop`: Stop current playback
+/// - `skip`/`next`: Skip to the next track
+/// - `previous`: Go to the previous track
+/// - `nowPlaying`: Get information about the currently playing track
+///
+/// ```swift
+/// let session = LanguageModelSession(tools: [MusicTool()])
+/// let response = try await session.respond(to: "Play Bohemian Rhapsody")
+/// ```
+///
+/// - Important: Requires MusicKit capability, `NSAppleMusicUsageDescription` in Info.plist,
+///   user permission at runtime, and an active Apple Music subscription for full playback.
 public struct MusicTool: Tool {
 
   /// The name of the tool, used for identification.

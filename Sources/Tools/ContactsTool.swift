@@ -9,10 +9,23 @@
 import Foundation
 import FoundationModels
 
-/// `ContactsTool` provides access to the Contacts app.
+/// A tool for managing contacts using the Contacts framework.
 ///
-/// This tool can search, read, and create contacts.
-/// Important: This requires the Contacts entitlement and user permission.
+/// Use `ContactsTool` to search, read, and create contacts.
+/// It integrates with the system Contacts app and requires appropriate permissions.
+///
+/// The following actions are supported:
+/// - `search`: Search contacts by name, email, or phone number
+/// - `read`: Read detailed information for a specific contact by ID
+/// - `create`: Create a new contact with provided information
+///
+/// ```swift
+/// let session = LanguageModelSession(tools: [ContactsTool()])
+/// let response = try await session.respond(to: "Find John's phone number")
+/// ```
+///
+/// - Important: Requires Contacts entitlement, `NSContactsUsageDescription` in Info.plist,
+///   and user permission at runtime.
 public struct ContactsTool: Tool {
 
     /// The name of the tool, used for identification.

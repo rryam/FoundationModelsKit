@@ -9,10 +9,27 @@
 import Foundation
 import FoundationModels
 
-/// `RemindersTool` provides access to the Reminders app.
+/// A tool for managing reminders using EventKit.
 ///
-/// This tool can create, read, update, and complete reminders.
-/// Important: This requires the Reminders entitlement and user permission.
+/// Use `RemindersTool` for create, read, update, complete, and delete operations
+/// for reminders. It integrates with the system Reminders app.
+///
+/// The following actions are supported:
+/// - `create`: Create a new reminder
+/// - `query`: Query reminders with optional filters
+/// - `complete`: Mark a reminder as completed
+/// - `update`: Update an existing reminder
+/// - `delete`: Delete a reminder
+///
+/// Query filters include: `all`, `incomplete`, `completed`, `today`, and `overdue`.
+///
+/// ```swift
+/// let session = LanguageModelSession(tools: [RemindersTool()])
+/// let response = try await session.respond(to: "Remind me to buy groceries tomorrow")
+/// ```
+///
+/// - Important: Requires Reminders entitlement, `NSRemindersUsageDescription` in Info.plist,
+///   and user permission at runtime.
 public struct RemindersTool: Tool {
 
   /// The name of the tool, used for identification.
