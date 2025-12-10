@@ -16,7 +16,12 @@ let package = Package(
   ],
   targets: [
     .target(
-      name: "FoundationModelsTools"
+      name: "FoundationModelsTools",
+      path: "Sources"
+    ),
+    .testTarget(
+      name: "FoundationModelsToolsTests",
+      dependencies: ["FoundationModelsTools"]
     )
   ]
 )
