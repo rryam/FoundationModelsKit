@@ -98,10 +98,10 @@ struct TokenEstimationAccuracyTests {
 
   @Test("Unicode characters are handled")
   func unicodeCharactersHandled() {
-    let text = "Hello"
+    let text = "你好, world! 👋" // This string contains CJK characters and emoji.
     let tokens = estimateTokens(from: text)
-
-    #expect(tokens > 0)
+    // The string has 12 characters (grapheme clusters). Expected tokens: ceil(12 / 4.75) = 3
+    #expect(tokens >= 2 && tokens <= 4)
   }
 
   @Test("Newlines are handled")

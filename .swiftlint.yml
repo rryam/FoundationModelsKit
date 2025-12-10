@@ -12,6 +12,7 @@ opt_in_rules:
 
 included:
   - Sources
+  - Tests
 
 excluded:
   - .build

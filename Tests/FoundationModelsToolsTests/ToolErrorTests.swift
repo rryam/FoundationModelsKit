@@ -25,6 +25,8 @@ struct CalendarErrorTests {
     #expect(error.errorDescription != nil)
     #expect(error.errorDescription!.contains("create"))
     #expect(error.errorDescription!.contains("query"))
+    #expect(error.errorDescription!.contains("read"))
+    #expect(error.errorDescription!.contains("update"))
   }
 
   @Test("Missing title error has description")
@@ -92,6 +94,10 @@ struct HealthErrorTests {
     #expect(error.errorDescription != nil)
     #expect(error.errorDescription!.contains("steps"))
     #expect(error.errorDescription!.contains("heartRate"))
+    #expect(error.errorDescription!.contains("workouts"))
+    #expect(error.errorDescription!.contains("sleep"))
+    #expect(error.errorDescription!.contains("activeEnergy"))
+    #expect(error.errorDescription!.contains("distance"))
   }
 
   @Test("No data error has description")
@@ -111,6 +117,9 @@ struct LocationErrorTests {
     #expect(error.errorDescription != nil)
     #expect(error.errorDescription!.contains("current"))
     #expect(error.errorDescription!.contains("geocode"))
+    #expect(error.errorDescription!.contains("reverse"))
+    #expect(error.errorDescription!.contains("search"))
+    #expect(error.errorDescription!.contains("distance"))
   }
 
   @Test("Missing address error has description")
@@ -138,6 +147,10 @@ struct MusicErrorTests {
     #expect(error.errorDescription!.contains("search"))
     #expect(error.errorDescription!.contains("play"))
     #expect(error.errorDescription!.contains("pause"))
+    #expect(error.errorDescription!.contains("stop"))
+    #expect(error.errorDescription!.contains("skip"))
+    #expect(error.errorDescription!.contains("previous"))
+    #expect(error.errorDescription!.contains("nowPlaying"))
   }
 
   @Test("Missing query error has description")
@@ -172,6 +185,8 @@ struct RemindersErrorTests {
     #expect(error.errorDescription!.contains("create"))
     #expect(error.errorDescription!.contains("query"))
     #expect(error.errorDescription!.contains("complete"))
+    #expect(error.errorDescription!.contains("update"))
+    #expect(error.errorDescription!.contains("delete"))
   }
 
   @Test("Missing title error has description")
