@@ -585,11 +585,6 @@ private func coordinateDescription(for location: CLLocation) -> String {
   )
 }
 
-// Helper function to format map item address
-private func formatMapItemAddress(_ mapItem: MKMapItem) -> String? {
-  formatAddress(from: mapItem, fallbackLocation: mapItem.location)
-}
-
 extension Double {
   var degreesToRadians: Double { self * .pi / 180 }
   var radiansToDegrees: Double { self * 180 / .pi }
