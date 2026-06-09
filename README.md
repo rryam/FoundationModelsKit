@@ -747,7 +747,7 @@ let compactTranscript = Transcript(entries: compactEntries)
 
 `rollingWindow(entries:)` keeps the latest entries exactly by count. `droppingCompletedToolCalls()` removes older tool-call and tool-output entries while preserving the latest active tool exchange and all non-tool entries.
 
-For longer conversations, use `summarizingHistory(entryThreshold:summaryPostamble:summarize:)` to replace earlier history with a single summary block attached to the latest prompt. The summarizer is a closure, so you can use the on-device Foundation Models session, a server model, or a deterministic test double.
+For longer conversations, use `summarizingHistory(entryThreshold:summaryPostamble:summarize:)` to replace earlier conversational history with a single summary block attached to the latest prompt. Instruction entries are preserved, including tool definitions. The summarizer is a closure, so you can use the on-device Foundation Models session, a server model, or a deterministic test double.
 
 ```swift
 let summarizer = LanguageModelSession(instructions: """

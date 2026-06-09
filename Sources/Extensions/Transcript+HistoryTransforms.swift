@@ -60,10 +60,10 @@ extension Collection where Element == Transcript.Entry {
   /// `entryThreshold` and the latest entry is a prompt. Otherwise, the original
   /// entries are returned unchanged.
   ///
-  /// When summarization runs, the returned history contains a single prompt. The
-  /// prompt starts with a text segment containing the generated summary and
-  /// optional postamble, followed by the latest prompt's original segments,
-  /// options, and response format.
+  /// When summarization runs, the returned history preserves instruction
+  /// entries, then adds a single prompt. The prompt starts with a text segment
+  /// containing the generated summary and optional postamble, followed by the
+  /// latest prompt's original segments, options, and response format.
   ///
   /// - Parameters:
   ///   - entryThreshold: Summarize only when the entry count is greater than this value.
@@ -108,7 +108,12 @@ extension Collection where Element == Transcript.Entry {
       responseFormat: prompt.responseFormat
     )
 
-    return [.prompt(summarizedPrompt)]
+    let instructions = entries.filter { entry in
+      if case .instructions = entry { return true }
+      return false
+    }
+
+    return instructions + [.prompt(summarizedPrompt)]
   }
 }
 

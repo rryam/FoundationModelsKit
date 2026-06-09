@@ -315,8 +315,12 @@ struct TranscriptHistoryTransformTests {
       Tool output (testTool): First answer.
       User: Second topic.
       """)
-    #expect(summarized.count == 1)
-    #expect(summarized.first?.foundationModelsToolsText == """
+    #expect(summarized.count == 2)
+    #expect(summarized.map { $0.foundationModelsToolsKind } == [
+      "instructions",
+      "prompt",
+    ])
+    #expect(summarized.last?.foundationModelsToolsText == """
       Summary of the conversation so far:
       User asked about the first topic.
 
@@ -324,6 +328,36 @@ struct TranscriptHistoryTransformTests {
 
       Second topic.
       """)
+  }
+
+  @Test("Summarizing history preserves instruction tool definitions")
+  func summarizingHistoryPreservesInstructionToolDefinitions() async throws {
+    let toolDefinition = Transcript.ToolDefinition(
+      name: "search",
+      description: "Searches documents",
+      parameters: GenerationSchema(type: String.self, properties: [])
+    )
+    let instructions = Transcript.Instructions(
+      segments: [.text(Transcript.TextSegment(content: "Use tools carefully."))],
+      toolDefinitions: [toolDefinition]
+    )
+    let entries: [Transcript.Entry] = [
+      .instructions(instructions),
+      .prompt(.foundationModelsTools("First topic.")),
+      .prompt(.foundationModelsTools("Second topic.")),
+    ]
+
+    let summarized = await entries.summarizingHistory(entryThreshold: 1) { _ in
+      "The user is discussing two topics."
+    }
+
+    guard case .instructions(let preservedInstructions) = summarized.first else {
+      Issue.record("Expected summarized history to preserve instructions")
+      return
+    }
+
+    #expect(preservedInstructions == instructions)
+    #expect(preservedInstructions.toolDefinitions == [toolDefinition])
   }
 
   @Test("Summarizing history uses custom postamble")
