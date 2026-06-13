@@ -1,5 +1,11 @@
 # FoundationModelsKit
 
+> [!IMPORTANT]
+> Versioned 2.x releases remain available from this repository and existing
+> dependencies continue to resolve unchanged. Active development now lives in
+> [Foundation Models Framework Lab](https://github.com/rudrankriyam/Foundation-Models-Framework-Lab/tree/main/Packages/FoundationModelsKit),
+> which publishes the `FoundationModelsKit` and `FoundationModelsTools` products.
+> See [MIGRATION.md](MIGRATION.md) for the package switch and compatibility notes.
 
 A collection of tools and utilities for Apple's Foundation Models Framework that help working with the language model, better.
 
@@ -9,6 +15,7 @@ A collection of tools and utilities for Apple's Foundation Models Framework that
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Migration to Foundation Lab](MIGRATION.md)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
   - [Privacy Permissions](#privacy-permissions)
@@ -70,21 +77,49 @@ A collection of tools and utilities for Apple's Foundation Models Framework that
 
 ## Installation
 
-Add **FoundationModelsTools** as a dependency in your `Package.swift`:
+### Active Package
+
+For current development, add Foundation Models Framework Lab as a dependency:
+
+```swift
+dependencies: [
+    .package(
+        url: "https://github.com/rudrankriyam/Foundation-Models-Framework-Lab.git",
+        branch: "main"
+    )
+]
+```
+
+Choose the lightweight utilities, system tools, or both:
+
+```swift
+.target(
+    name: "YourTarget",
+    dependencies: [
+        .product(
+            name: "FoundationModelsKit",
+            package: "foundation-models-framework-lab"
+        ),
+        .product(
+            name: "FoundationModelsTools",
+            package: "foundation-models-framework-lab"
+        )
+    ]
+)
+```
+
+`FoundationModelsTools` re-exports `FoundationModelsKit`, so existing source files
+that only import `FoundationModelsTools` remain compatible.
+
+### Stable 2.x
+
+Applications that prefer the versioned 2.x package can continue using this
+repository without code changes:
 
 ```swift
 dependencies: [
     .package(url: "https://github.com/rryam/FoundationModelsKit", from: "2.0.0")
 ]
-```
-
-Then add it to your target dependencies:
-
-```swift
-.target(
-    name: "YourTarget",
-    dependencies: ["FoundationModelsTools"]
-)
 ```
 
 ## Quick Start
