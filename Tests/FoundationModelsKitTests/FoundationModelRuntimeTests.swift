@@ -179,6 +179,37 @@ struct FoundationModelRuntimeTests {
     #expect(instructions.foundationModelsKitTestText.contains("Stale instructions") == false)
     #expect(entries.count == 2)
   }
+
+  @Test("Sliding window budgets current instructions before trimming history")
+  @MainActor
+  func slidingWindowBudgetsCurrentInstructionsBeforeTrimmingHistory() async {
+    let engine = FoundationModelConversationEngine(
+      configuration: FoundationModelConversationConfiguration(
+        baseInstructions: String(repeating: "system ", count: 200),
+        summaryInstructions: "Summarize.",
+        summaryPromptPreamble: "Summary:",
+        conversationUserLabel: "User:",
+        conversationAssistantLabel: "Assistant:",
+        continuationNote: "Continue.",
+        enableSlidingWindow: true
+      )
+    )
+    engine.setMaxContextSize(120)
+
+    let entries = await engine.slidingWindowEntries(
+      from: Transcript(entries: [
+        .prompt(.foundationModelsKitTest("Latest prompt should not fit."))
+      ])
+    )
+
+    guard case .instructions(let instructions) = entries.first else {
+      Issue.record("Expected budgeted entries to preserve current instructions")
+      return
+    }
+
+    #expect(instructions.foundationModelsKitTestText.contains("system system"))
+    #expect(entries.count == 1)
+  }
 }
 
 private extension Transcript.Instructions {

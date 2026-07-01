@@ -185,6 +185,14 @@ public final class FoundationModelConversationEngine {
         return Transcript(entries: [instructionEntry] + nonInstructionEntries)
     }
 
+    func slidingWindowEntries(from transcript: Transcript) async -> [Transcript.Entry] {
+        let budgetedTranscript = slidingWindowTranscript(from: Array(transcript))
+        return await budgetedTranscript.entriesWithinTokenBudget(
+            effectiveTargetWindowSize,
+            using: model
+        )
+    }
+
     public func prewarm(promptPrefix: Prompt? = nil) {
         if let promptPrefix {
             session.prewarm(promptPrefix: promptPrefix)
@@ -306,10 +314,7 @@ private extension FoundationModelConversationEngine {
         isApplyingWindow = true
         notifyStateChange()
 
-        let windowEntries = await session.transcript.entriesWithinTokenBudget(
-            effectiveTargetWindowSize,
-            using: model
-        )
+        let windowEntries = await slidingWindowEntries(from: session.transcript)
         let transcript = slidingWindowTranscript(from: windowEntries)
 
         session = LanguageModelSession(model: model, transcript: transcript)
