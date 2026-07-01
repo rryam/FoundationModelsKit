@@ -1,21 +1,21 @@
 # FoundationModelsKit
 
-Production companion utilities for Apple's Foundation Models framework.
+Utilities for shipping apps and tools with Apple's Foundation Models framework.
 
-FoundationModelsKit helps apps, CLIs, benchmarks, and developer tools use Foundation Models with durable runtime checks, Codable request and result envelopes, schema conversion, token accounting, context recovery, and ready-to-use tools.
+FoundationModelsKit helps apps, CLIs, benchmarks, and developer tools use Foundation Models with runtime checks, Codable request and result types, schema conversion, token accounting, context recovery, and concrete tools.
 
-It is designed to complement Apple's Foundation Models framework and Apple's Foundation Models Utilities. Use Apple's utilities for protocol-native pieces such as OpenAI-compatible `LanguageModel` adapters. Use FoundationModelsKit when you need production scaffolding around on-device and Private Cloud Compute execution.
+It is designed to complement Apple's Foundation Models framework and Apple's Foundation Models Utilities. Use Apple's utilities for OpenAI-compatible `LanguageModel` adapters and extensions to FoundationModels itself. Use FoundationModelsKit when you need app, CLI, or benchmark support around on-device and Private Cloud Compute execution.
 
 ## Products
 
 The package exposes two products:
 
-- `FoundationModelsKit`: runtime inspection, capability use cases, model configuration, schemas, token accounting, transcript utilities, error projection, and conversation infrastructure.
-- `FoundationModelsTools`: concrete `Tool` implementations for Apple platform capabilities and web services. This product re-exports `FoundationModelsKit`.
+- `FoundationModelsKit`: runtime inspection, capability use cases, model configuration, schemas, token accounting, transcript utilities, error projection, and conversation state.
+- `FoundationModelsTools`: `Tool` implementations for Apple platform capabilities and web services. This product re-exports `FoundationModelsKit`.
 
-## What It Provides
+## What Is Included
 
-### Runtime Truth
+### Runtime Readiness
 
 Inspect whether Foundation Models can actually run in the current process.
 
@@ -24,7 +24,7 @@ Inspect whether Foundation Models can actually run in the current process.
 - PCC entitlement status
 - PCC quota state
 - Supported language metadata
-- Stable Codable status models for logs, CLIs, and benchmarks
+- Codable status models for logs, CLIs, and benchmarks
 
 ```swift
 import FoundationModelsKit
@@ -89,7 +89,7 @@ let request = FoundationModelTextGenerationRequest(
 let result = try await FoundationModelTextGenerationUseCase().execute(request)
 ```
 
-OpenAI-compatible hosted models are intentionally not duplicated here. For that protocol-native adapter layer, use Apple's Foundation Models Utilities and compose it with FoundationModelsKit's runtime, schema, token, and logging infrastructure where useful.
+OpenAI-compatible hosted models are intentionally not duplicated here. Use Apple's Foundation Models Utilities for that adapter, then use FoundationModelsKit for runtime status, schema conversion, token accounting, and run metadata.
 
 ### Schema Utilities
 
@@ -118,7 +118,7 @@ try schema.validate()
 let generationSchema = try schema.generationSchema(rootName: "BookRecommendation")
 ```
 
-The schema layer is built for CLIs, benchmarks, and user-authored schema files. It reports exact JSON pointer-style paths for unsupported keywords and invalid declarations.
+The schema utilities are built for CLIs, benchmarks, and user-authored schema files. They report exact JSON pointer-style paths for unsupported keywords and invalid declarations.
 
 ### Token Accounting and Context Budgets
 
@@ -189,7 +189,7 @@ do {
 
 ### Tools
 
-`FoundationModelsTools` provides ready-to-use tool implementations for real app capabilities.
+`FoundationModelsTools` provides tools for real app capabilities.
 
 ```swift
 import FoundationModels
@@ -283,19 +283,19 @@ Use Apple's utilities for:
 
 - OpenAI-compatible `LanguageModel` adapters
 - Protocol-native `DynamicProfile` helpers
-- Generic model-facing skills if they become the canonical upstream surface
+- Generic model-facing skills if Apple keeps them in that package
 
 Use FoundationModelsKit for:
 
 - Runtime and PCC readiness checks
-- Stable request/result envelopes
+- Codable request and result types
 - Codable execution metadata
 - Error projection
 - JSON Schema validation and conversion
 - Token accounting
 - Conversation recovery
 - Concrete Apple platform tools
-- App, CLI, and benchmark infrastructure
+- App, CLI, and benchmark workflows
 
 ## Validation
 
