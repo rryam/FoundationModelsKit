@@ -260,6 +260,80 @@ struct FoundationModelRuntimeTests {
     #expect(instructions.foundationModelsKitTestText.contains("system system"))
     #expect(entries.count == 1)
   }
+
+  @Test("Overflow one-shot retry remains cancellable")
+  @MainActor
+  func overflowOneShotRetryRemainsCancellable() async {
+    let engine = FoundationModelConversationEngine(
+      configuration: FoundationModelConversationConfiguration(
+        baseInstructions: "Answer briefly.",
+        summaryInstructions: "Summarize.",
+        summaryPromptPreamble: "Summary:",
+        conversationUserLabel: "User:",
+        conversationAssistantLabel: "Assistant:",
+        continuationNote: "Continue."
+      )
+    )
+    let retryProbe = RetryProbe()
+    var responseCallCount = 0
+
+    engine.conversationSummaryOverride = {
+      FoundationModelConversationSummary(
+        summary: "The user asked a question before the context overflow.",
+        keyTopics: ["context recovery"],
+        userPreferences: []
+      )
+    }
+    engine.responseOverride = { _, _ in
+      responseCallCount += 1
+      if responseCallCount == 1 {
+        throw LanguageModelSession.GenerationError.exceededContextWindowSize(
+          .init(debugDescription: "Test context overflow")
+        )
+      }
+
+      await retryProbe.markStarted()
+      try await Task.sleep(for: .seconds(30))
+      return "Late response"
+    }
+
+    let responseTask = Task { @MainActor in
+      try await engine.sendMessage("Retry after recovery")
+    }
+
+    await retryProbe.waitUntilStarted()
+    engine.cancelActiveResponse()
+
+    do {
+      _ = try await responseTask.value
+      Issue.record("Expected overflow retry cancellation to throw")
+    } catch is CancellationError {
+      #expect(responseCallCount == 2)
+    } catch {
+      Issue.record("Expected CancellationError, received \(error)")
+    }
+  }
+}
+
+private actor RetryProbe {
+  private var continuation: CheckedContinuation<Void, Never>?
+  private var started = false
+
+  func waitUntilStarted() async {
+    if started {
+      return
+    }
+
+    await withCheckedContinuation { continuation in
+      self.continuation = continuation
+    }
+  }
+
+  func markStarted() {
+    started = true
+    continuation?.resume()
+    continuation = nil
+  }
 }
 
 private extension Transcript.Instructions {

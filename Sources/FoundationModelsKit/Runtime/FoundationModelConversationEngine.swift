@@ -32,6 +32,10 @@ public final class FoundationModelConversationEngine {
     private let adapterURL: URL?
     private var activeStreamingTask: Task<String, Error>?
     private var activeResponseID: UUID?
+    #if DEBUG
+    var conversationSummaryOverride: (() async throws -> FoundationModelConversationSummary)?
+    var responseOverride: ((String, FoundationModelGenerationOptions?) async throws -> String)?
+    #endif
 
     public convenience init(configuration: FoundationModelConversationConfiguration) {
         self.init(
@@ -481,6 +485,12 @@ private extension FoundationModelConversationEngine {
         to prompt: String,
         generationOptions: FoundationModelGenerationOptions?
     ) async throws -> String {
+        #if DEBUG
+        if let responseOverride {
+            return try await responseOverride(prompt, generationOptions)
+        }
+        #endif
+
         if let generationOptions {
             #if compiler(>=6.4)
             if #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {
@@ -562,7 +572,7 @@ private extension FoundationModelConversationEngine {
                 onPartialResponse: onPartialResponse
             )
         case .oneShot:
-            response = try await respond(to: userMessage, generationOptions: generationOptions)
+            response = try await oneShotResponse(to: userMessage, generationOptions: generationOptions)
         }
 
         await updateTokenCount()
@@ -570,6 +580,12 @@ private extension FoundationModelConversationEngine {
     }
 
     func generateConversationSummary() async throws -> FoundationModelConversationSummary {
+        #if DEBUG
+        if let conversationSummaryOverride {
+            return try await conversationSummaryOverride()
+        }
+        #endif
+
         let summarySession = FoundationModelSessionFactory.makeSession(
             runtime: .onDevice,
             model: model,
