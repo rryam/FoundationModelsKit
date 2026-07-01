@@ -62,6 +62,10 @@ struct FoundationModelRuntimeTests {
     #expect(engine.modelRuntime == .onDevice)
     #expect(engine.reasoningLevel == .none)
     #expect(engine.guardrails == .default)
+
+    engine.setReasoningLevel(.deep)
+
+    #expect(engine.reasoningLevel == .none)
   }
 
   @Test("Clear preserves recovered summary context")

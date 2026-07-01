@@ -59,7 +59,12 @@ func foundationModelConversationTokenSnapshot(
     case .context:
         contextUsage
     case .accumulatedSession:
-        observedSessionUsage ?? contextUsage
+        if let observedSessionUsage,
+           observedSessionUsage.totalTokenCount > 0 || contextUsage.totalTokenCount == 0 {
+            observedSessionUsage
+        } else {
+            contextUsage
+        }
     }
 
     return FoundationModelConversationTokenSnapshot(

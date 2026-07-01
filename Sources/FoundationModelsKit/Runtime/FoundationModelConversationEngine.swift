@@ -92,6 +92,7 @@ public final class FoundationModelConversationEngine {
         notifyStateChange()
     }
     public func setReasoningLevel(_ level: FoundationModelReasoningLevel) {
+        guard adapterURL == nil else { return }
         guard configuration.reasoningLevel != level else { return }
         configuration.reasoningLevel = level
         notifyStateChange()
