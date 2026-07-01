@@ -82,17 +82,18 @@ final class RAGChatViewModel {
         errorMessage = nil
 
         task = Task {
+            defer { isLoading = false }
+
             do {
                 let response = try await responder.respond(to: currentQuestion)
                 guard !Task.isCancelled else { return }
                 answer = response
+            } catch is CancellationError {
+                // Cancellation returns to idle through the defer above.
             } catch {
                 guard !Task.isCancelled else { return }
                 errorMessage = FoundationModelsErrorPresenter.message(for: error)
             }
-
-            guard !Task.isCancelled else { return }
-            isLoading = false
         }
     }
 

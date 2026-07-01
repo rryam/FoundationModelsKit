@@ -115,6 +115,8 @@ final class StreamingTextViewModel {
         errorMessage = nil
 
         task = Task {
+            defer { isStreaming = false }
+
             do {
                 let session = LanguageModelSession()
                 let stream = session.streamResponse(to: Prompt(prompt))
@@ -123,12 +125,12 @@ final class StreamingTextViewModel {
                     guard !Task.isCancelled else { return }
                     output = partial.content
                 }
+            } catch is CancellationError {
+                // Cancellation returns to idle through the defer above.
             } catch {
                 guard !Task.isCancelled else { return }
                 errorMessage = FoundationModelsErrorPresenter.message(for: error)
             }
-
-            isStreaming = false
         }
     }
 

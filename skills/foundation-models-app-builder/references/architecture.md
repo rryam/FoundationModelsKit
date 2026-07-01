@@ -119,16 +119,18 @@ final class SummaryViewModel {
         errorMessage = nil
 
         task = Task {
+            defer { isGenerating = false }
+
             do {
                 let result = try await useCase.execute(notes: input)
                 guard !Task.isCancelled else { return }
                 output = result.content
+            } catch is CancellationError {
+                // Cancellation returns to idle through the defer above.
             } catch {
                 guard !Task.isCancelled else { return }
                 errorMessage = AppAIError.userMessage(for: error)
             }
-
-            isGenerating = false
         }
     }
 
