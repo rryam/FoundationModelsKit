@@ -21,11 +21,13 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "FoundationModelsKit"
+            name: "FoundationModelsKit",
+            exclude: ["FoundationModelsKit.docc"]
         ),
         .target(
             name: "FoundationModelsTools",
-            dependencies: ["FoundationModelsKit"]
+            dependencies: ["FoundationModelsKit"],
+            exclude: ["FoundationModelsTools.docc"]
         ),
         .testTarget(
             name: "FoundationModelsKitTests",
