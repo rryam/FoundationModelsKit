@@ -39,6 +39,10 @@ public struct FoundationModelsTextGenerator: TextGenerating {
         }
 
         let model = SystemLanguageModel.default
+        guard case .available = model.availability else {
+            throw AppAIError.modelUnavailable(String(describing: model.availability))
+        }
+
         let session: LanguageModelSession
 
         if let systemPrompt = request.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),

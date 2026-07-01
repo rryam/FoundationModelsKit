@@ -46,6 +46,8 @@ final class VoiceAssistantViewModel {
                 response = try await session.respond(to: Prompt(text)).content
                 state = .speaking
                 // Send `response` to an AVSpeechSynthesizer wrapper here.
+            } catch is CancellationError {
+                state = .idle
             } catch {
                 state = .failed(FoundationModelsErrorPresenter.message(for: error))
             }

@@ -43,7 +43,7 @@ Then classify the work:
 Use the active Xcode 27 SDK as the source of truth. Adapt paths for the user's Xcode:
 
 ```bash
-export DEVELOPER_DIR=/Users/rudrank/Downloads/Xcode-beta.app/Contents/Developer
+export DEVELOPER_DIR=/path/to/Xcode-beta.app/Contents/Developer
 xcrun --show-sdk-path --sdk iphoneos
 xcrun --show-sdk-path --sdk macosx
 ```
