@@ -27,6 +27,16 @@ public struct FoundationModelRuntimeStatus: FoundationModelCapabilityResult, Sen
     public let reason: FoundationModelRuntimeUnavailableReason?
     public let metadata: FoundationModelExecutionMetadata
 
+    enum CodingKeys: String, CodingKey {
+        case runtime
+        case isSupported
+        case isAvailable
+        case isRunnableInCurrentProcess
+        case authorization
+        case reason
+        case metadata
+    }
+
     public init(
         runtime: FoundationModelRuntime,
         isSupported: Bool = true,
@@ -49,6 +59,34 @@ public struct FoundationModelRuntimeStatus: FoundationModelCapabilityResult, Sen
             authorization: authorization
         )
         self.metadata = metadata
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let runtime = try container.decode(FoundationModelRuntime.self, forKey: .runtime)
+        let isSupported = try container.decodeIfPresent(Bool.self, forKey: .isSupported) ?? true
+        let isAvailable = try container.decode(Bool.self, forKey: .isAvailable)
+        let authorization = try container.decodeIfPresent(
+            FoundationModelRuntimeAuthorization.self,
+            forKey: .authorization
+        ) ?? .notRequired
+        let reason = try container.decodeIfPresent(
+            FoundationModelRuntimeUnavailableReason.self,
+            forKey: .reason
+        )
+        let metadata = try container.decodeIfPresent(
+            FoundationModelExecutionMetadata.self,
+            forKey: .metadata
+        ) ?? FoundationModelExecutionMetadata()
+
+        self.init(
+            runtime: runtime,
+            isSupported: isSupported,
+            isAvailable: isAvailable,
+            authorization: authorization,
+            reason: reason,
+            metadata: metadata
+        )
     }
 
     private static func authorizationReason(

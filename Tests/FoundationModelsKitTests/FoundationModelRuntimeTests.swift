@@ -26,6 +26,26 @@ struct FoundationModelRuntimeTests {
     #expect(granted.reason == nil)
   }
 
+  @Test("Decoded private cloud status recomputes runnable authorization")
+  func decodedPrivateCloudStatusRecomputesRunnableAuthorization() throws {
+    let data = Data("""
+    {
+      "runtime": "privateCloudCompute",
+      "isSupported": true,
+      "isAvailable": true,
+      "isRunnableInCurrentProcess": true,
+      "authorization": "missing",
+      "reason": null,
+      "metadata": {}
+    }
+    """.utf8)
+
+    let status = try JSONDecoder().decode(FoundationModelRuntimeStatus.self, from: data)
+
+    #expect(status.isRunnableInCurrentProcess == false)
+    #expect(status.reason == .missingEntitlement)
+  }
+
   @Test("Supported language display names include region when present")
   func supportedLanguageDisplayNameIncludesRegion() {
     let language = FoundationModelSupportedLanguage(

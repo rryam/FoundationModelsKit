@@ -15,6 +15,11 @@ public enum FoundationModelConversationContextBuilder {
             case .response:
                 guard let text = entry.textContentJoined() else { return nil }
                 return "\(assistantLabel) \(text)"
+            case .toolCalls(let toolCalls):
+                return "Tool Call: \(toolCalls.id)"
+            case .toolOutput(let toolOutput):
+                guard let text = entry.textContentJoined() else { return nil }
+                return "Tool Output (\(toolOutput.toolName)): \(text)"
             default:
                 return nil
             }
