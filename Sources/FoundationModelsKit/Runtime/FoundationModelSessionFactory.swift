@@ -2,12 +2,30 @@ import Foundation
 import FoundationModels
 
 enum FoundationModelSessionFactory {
+    static func resolvedRuntime(_ runtime: FoundationModelRuntime) -> FoundationModelRuntime {
+        guard runtime == .privateCloudCompute else {
+            return runtime
+        }
+        return supportsPrivateCloudSessions ? .privateCloudCompute : .onDevice
+    }
+
+    private static var supportsPrivateCloudSessions: Bool {
+        #if compiler(>=6.4)
+        if #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {
+            return true
+        }
+        #endif
+        return false
+    }
+
     static func makeSession(
         runtime: FoundationModelRuntime,
         model: SystemLanguageModel,
         tools: [any Tool],
         instructions: String
     ) -> LanguageModelSession {
+        let runtime = resolvedRuntime(runtime)
+
         #if compiler(>=6.4)
         if runtime == .privateCloudCompute {
             if #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {

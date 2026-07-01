@@ -73,6 +73,8 @@ public final class FoundationModelConversationEngine {
         model: SystemLanguageModel,
         adapterURL: URL?
     ) {
+        var configuration = configuration
+        configuration.modelRuntime = FoundationModelSessionFactory.resolvedRuntime(configuration.modelRuntime)
         self.configuration = configuration
         self.model = model
         self.sessionInstructions = configuration.baseInstructions
@@ -110,7 +112,7 @@ public final class FoundationModelConversationEngine {
             sessionInstructions = baseInstructions
         }
         if let modelRuntime, adapterURL == nil {
-            configuration.modelRuntime = modelRuntime
+            configuration.modelRuntime = FoundationModelSessionFactory.resolvedRuntime(modelRuntime)
         }
         if let reasoningLevel, adapterURL == nil {
             configuration.reasoningLevel = reasoningLevel

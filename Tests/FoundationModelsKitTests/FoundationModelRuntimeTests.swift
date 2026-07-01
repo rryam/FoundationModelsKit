@@ -88,6 +88,32 @@ struct FoundationModelRuntimeTests {
     #expect(engine.reasoningLevel == .none)
   }
 
+  @Test("Conversation engine reports resolved runtime")
+  @MainActor
+  func conversationEngineReportsResolvedRuntime() {
+    let engine = FoundationModelConversationEngine(
+      configuration: FoundationModelConversationConfiguration(
+        baseInstructions: "Answer briefly.",
+        summaryInstructions: "Summarize.",
+        summaryPromptPreamble: "Summary:",
+        conversationUserLabel: "User:",
+        conversationAssistantLabel: "Assistant:",
+        continuationNote: "Continue.",
+        modelRuntime: .privateCloudCompute
+      )
+    )
+
+    #if compiler(>=6.4)
+    if #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {
+      #expect(engine.modelRuntime == .privateCloudCompute)
+    } else {
+      #expect(engine.modelRuntime == .onDevice)
+    }
+    #else
+    #expect(engine.modelRuntime == .onDevice)
+    #endif
+  }
+
   @Test("Clear preserves recovered summary context")
   @MainActor
   func clearPreservesRecoveredSummaryContext() {
