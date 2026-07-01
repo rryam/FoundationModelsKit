@@ -20,8 +20,15 @@ public final class FoundationModelConversationEngine {
     public var guardrails: FoundationModelGuardrails {
         configuration.guardrails
     }
+    var currentSessionInstructions: String {
+        sessionInstructions
+    }
+    var effectiveTargetWindowSize: Int {
+        max(1, min(configuration.targetWindowSize, maxContextSize))
+    }
     private var configuration: FoundationModelConversationConfiguration
     private var model: SystemLanguageModel
+    private var sessionInstructions: String
     private let adapterURL: URL?
     private var activeStreamingTask: Task<String, Error>?
     private var activeResponseID: UUID?
@@ -68,13 +75,14 @@ public final class FoundationModelConversationEngine {
     ) {
         self.configuration = configuration
         self.model = model
+        self.sessionInstructions = configuration.baseInstructions
         self.adapterURL = adapterURL
         self.maxContextSize = configuration.defaultMaxContextSize
         self.session = FoundationModelSessionFactory.makeSession(
             runtime: configuration.modelRuntime,
             model: model,
             tools: configuration.tools,
-            instructions: configuration.baseInstructions
+            instructions: sessionInstructions
         )
     }
 
@@ -98,6 +106,7 @@ public final class FoundationModelConversationEngine {
     ) {
         if let baseInstructions {
             configuration.baseInstructions = baseInstructions
+            sessionInstructions = baseInstructions
         }
         if let modelRuntime, adapterURL == nil {
             configuration.modelRuntime = modelRuntime
@@ -133,6 +142,26 @@ public final class FoundationModelConversationEngine {
         activeStreamingTask?.cancel()
         activeStreamingTask = nil
         activeResponseID = nil
+    }
+
+    func applyRecoveredConversationSummary(_ summary: FoundationModelConversationSummary) {
+        let contextInstructions = FoundationModelConversationContextBuilder.contextInstructions(
+            baseInstructions: configuration.baseInstructions,
+            summary: summary,
+            continuationNote: configuration.continuationNote
+        )
+        sessionInstructions = contextInstructions
+
+        session = FoundationModelSessionFactory.makeSession(
+            runtime: configuration.modelRuntime,
+            model: model,
+            tools: configuration.tools,
+            instructions: sessionInstructions
+        )
+        sessionCount += 1
+        currentTokenCount = 0
+        currentTokenUsage = nil
+        notifyStateChange()
     }
 
     public func prewarm(promptPrefix: Prompt? = nil) {
@@ -231,7 +260,7 @@ private extension FoundationModelConversationEngine {
             runtime: configuration.modelRuntime,
             model: model,
             tools: configuration.tools,
-            instructions: configuration.baseInstructions
+            instructions: sessionInstructions
         )
         notifyStateChange()
     }
@@ -257,7 +286,7 @@ private extension FoundationModelConversationEngine {
         notifyStateChange()
 
         let windowEntries = await session.transcript.entriesWithinTokenBudget(
-            configuration.targetWindowSize,
+            effectiveTargetWindowSize,
             using: model
         )
         let transcript = Transcript(entries: windowEntries)
@@ -481,7 +510,7 @@ private extension FoundationModelConversationEngine {
 
         do {
             let summary = try await generateConversationSummary()
-            createNewSession(with: summary)
+            applyRecoveredConversationSummary(summary)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -538,31 +567,13 @@ private extension FoundationModelConversationEngine {
         return summaryResponse.content
     }
 
-    func createNewSession(with summary: FoundationModelConversationSummary) {
-        let contextInstructions = FoundationModelConversationContextBuilder.contextInstructions(
-            baseInstructions: configuration.baseInstructions,
-            summary: summary,
-            continuationNote: configuration.continuationNote
-        )
-
-        session = FoundationModelSessionFactory.makeSession(
-            runtime: configuration.modelRuntime,
-            model: model,
-            tools: configuration.tools,
-            instructions: contextInstructions
-        )
-        sessionCount += 1
-        currentTokenCount = 0
-        currentTokenUsage = nil
-        notifyStateChange()
-    }
-
     func createFreshSessionAfterOverflow() {
+        sessionInstructions = configuration.baseInstructions
         session = FoundationModelSessionFactory.makeSession(
             runtime: configuration.modelRuntime,
             model: model,
             tools: configuration.tools,
-            instructions: configuration.baseInstructions
+            instructions: sessionInstructions
         )
         sessionCount += 1
         currentTokenCount = 0

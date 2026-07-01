@@ -63,4 +63,82 @@ struct FoundationModelRuntimeTests {
     #expect(engine.reasoningLevel == .none)
     #expect(engine.guardrails == .default)
   }
+
+  @Test("Clear preserves recovered summary context")
+  @MainActor
+  func clearPreservesRecoveredSummaryContext() {
+    let engine = FoundationModelConversationEngine(
+      configuration: FoundationModelConversationConfiguration(
+        baseInstructions: "Answer from the original system prompt.",
+        summaryInstructions: "Summarize.",
+        summaryPromptPreamble: "Summary:",
+        conversationUserLabel: "User:",
+        conversationAssistantLabel: "Assistant:",
+        continuationNote: "Continue from the summary."
+      )
+    )
+    let summary = FoundationModelConversationSummary(
+      summary: "The user is extracting reusable runtime APIs.",
+      keyTopics: ["runtime extraction"],
+      userPreferences: ["Keep FoundationModelsKit as one package."]
+    )
+
+    engine.applyRecoveredConversationSummary(summary)
+    let recoveredInstructions = engine.currentSessionInstructions
+
+    #expect(recoveredInstructions.contains("Answer from the original system prompt."))
+    #expect(recoveredInstructions.contains("The user is extracting reusable runtime APIs."))
+
+    engine.clear()
+
+    #expect(engine.currentSessionInstructions == recoveredInstructions)
+
+    engine.rebuild(baseInstructions: "Use the new explicit baseline.")
+
+    #expect(engine.currentSessionInstructions == "Use the new explicit baseline.")
+  }
+
+  @Test("Sliding window budget does not exceed active context size")
+  @MainActor
+  func slidingWindowBudgetDoesNotExceedActiveContextSize() {
+    let engine = FoundationModelConversationEngine(
+      configuration: FoundationModelConversationConfiguration(
+        baseInstructions: "Answer briefly.",
+        summaryInstructions: "Summarize.",
+        summaryPromptPreamble: "Summary:",
+        conversationUserLabel: "User:",
+        conversationAssistantLabel: "Assistant:",
+        continuationNote: "Continue.",
+        enableSlidingWindow: true,
+        targetWindowSize: 6_000,
+        defaultMaxContextSize: 4_096
+      )
+    )
+
+    #expect(engine.effectiveTargetWindowSize == 4_096)
+
+    engine.setMaxContextSize(1_024)
+
+    #expect(engine.effectiveTargetWindowSize == 1_024)
+  }
+
+  @Test("Sliding window budget keeps a positive lower bound")
+  @MainActor
+  func slidingWindowBudgetKeepsPositiveLowerBound() {
+    let engine = FoundationModelConversationEngine(
+      configuration: FoundationModelConversationConfiguration(
+        baseInstructions: "Answer briefly.",
+        summaryInstructions: "Summarize.",
+        summaryPromptPreamble: "Summary:",
+        conversationUserLabel: "User:",
+        conversationAssistantLabel: "Assistant:",
+        continuationNote: "Continue.",
+        enableSlidingWindow: true,
+        targetWindowSize: 0,
+        defaultMaxContextSize: 4_096
+      )
+    )
+
+    #expect(engine.effectiveTargetWindowSize == 1)
+  }
 }
