@@ -1,6 +1,6 @@
 //
 //  TokenCountingTests.swift
-//  FoundationModelsToolsTests
+//  FoundationModelsKitTests
 //
 //  Tests for token counting and context window management utilities.
 //
@@ -8,7 +8,7 @@
 import Foundation
 import FoundationModels
 import Testing
-@testable import FoundationModelsTools
+@testable import FoundationModelsKit
 
 @Suite("Token Counting Tests")
 struct TokenCountingTests {
@@ -61,6 +61,78 @@ struct TokenCountingTests {
   func conservativeEmptyStringReturnsZero() {
     let tokens = estimateTokensConservative(from: "")
     #expect(tokens == 0)
+  }
+
+  @Test("Estimated token window stays within the safe budget")
+  func estimatedTokenWindowStaysWithinSafeBudget() {
+    let entries: [Transcript.Entry] = (1...4).map { index in
+      .prompt(.foundationModelsTools("\(index) " + String(repeating: "a", count: 188)))
+    }
+    let transcript = Transcript(entries: entries)
+
+    let trimmed = transcript.entriesWithinTokenBudget(220)
+    let trimmedTranscript = Transcript(entries: trimmed)
+
+    #expect(trimmed.count < entries.count)
+    #expect(trimmedTranscript.safeEstimatedTokenCount <= 220)
+  }
+
+  @Test("Content budget reserves system overhead and safety margin")
+  func contentBudgetReservesSystemOverheadAndSafetyMargin() {
+    #expect(foundationModelsKitContentBudget(forSafeBudget: 100) == 0)
+    #expect(foundationModelsKitContentBudget(forSafeBudget: 220) == 96)
+  }
+
+  @Test("Token window preserves oversized instructions")
+  func tokenWindowPreservesOversizedInstructions() {
+    let instruction: Transcript.Entry = .instructions(
+      .foundationModelsTools(String(repeating: "system ", count: 200))
+    )
+    let transcript = Transcript(entries: [
+      instruction,
+      .prompt(.foundationModelsTools("Latest user prompt"))
+    ])
+
+    let trimmed = transcript.entriesWithinTokenBudget(120)
+
+    #expect(trimmed == [instruction])
+  }
+
+  @Test("Instruction estimates include tool definitions")
+  func instructionEstimatesIncludeToolDefinitions() throws {
+    let schema = try GenerationSchema(
+      root: DynamicGenerationSchema(
+        name: "WeatherArguments",
+        properties: [
+          .init(name: "city", schema: .init(type: String.self))
+        ]
+      ),
+      dependencies: []
+    )
+    let segments: [Transcript.Segment] = [
+      .text(Transcript.TextSegment(content: "Use tools when helpful."))
+    ]
+    let textOnly: Transcript.Entry = .instructions(
+      Transcript.Instructions(segments: segments, toolDefinitions: [])
+    )
+    let withTool: Transcript.Entry = .instructions(
+      Transcript.Instructions(
+        segments: segments,
+        toolDefinitions: [
+          Transcript.ToolDefinition(
+            name: "weather",
+            description: "Looks up current weather for a city.",
+            parameters: schema
+          )
+        ]
+      )
+    )
+
+    #expect(withTool.estimatedTokenCount > textOnly.estimatedTokenCount)
+    #expect(
+      withTool.estimatedTokenCount - textOnly.estimatedTokenCount >=
+      estimateTokensConservative(from: "weatherLooks up current weather for a city.")
+    )
   }
 }
 
@@ -124,7 +196,7 @@ struct TranscriptHistoryTransformTests {
       .prompt(.foundationModelsTools("First")),
       .toolOutput(.foundationModelsTools(id: "first-output", text: "First answer")),
       .prompt(.foundationModelsTools("Second")),
-      .toolOutput(.foundationModelsTools(id: "second-output", text: "Second answer")),
+      .toolOutput(.foundationModelsTools(id: "second-output", text: "Second answer"))
     ]
 
     let window = entries.rollingWindow(entries: 3)
@@ -133,7 +205,7 @@ struct TranscriptHistoryTransformTests {
     #expect(window.map { $0.foundationModelsToolsText } == [
       "First answer",
       "Second",
-      "Second answer",
+      "Second answer"
     ])
   }
 
@@ -141,7 +213,7 @@ struct TranscriptHistoryTransformTests {
   func rollingWindowReturnsEmptyForNonPositiveSizes() {
     let entries: [Transcript.Entry] = [
       .prompt(.foundationModelsTools("First")),
-      .toolOutput(.foundationModelsTools(id: "first-output", text: "First answer")),
+      .toolOutput(.foundationModelsTools(id: "first-output", text: "First answer"))
     ]
 
     #expect(entries.rollingWindow(entries: 0).isEmpty)
@@ -153,19 +225,19 @@ struct TranscriptHistoryTransformTests {
     let entries: [Transcript.Entry] = [
       .prompt(.foundationModelsTools("First")),
       .toolOutput(.foundationModelsTools(id: "first-output", text: "First answer")),
-      .prompt(.foundationModelsTools("Second")),
+      .prompt(.foundationModelsTools("Second"))
     ]
 
     let window = entries.rollingWindow(entries: 2)
 
     #expect(window.map { $0.foundationModelsToolsText } == [
       "First answer",
-      "Second",
+      "Second"
     ])
   }
 
-  @Test("Dropping completed tool calls removes older tool exchanges")
-  func droppingCompletedToolCallsRemovesOlderToolExchanges() {
+  @Test("Dropping completed tool calls removes exchanges before the latest prompt")
+  func droppingCompletedToolCallsRemovesExchangesBeforeLatestPrompt() {
     let oldToolCalls = Transcript.ToolCalls(id: "old-calls", [])
     let oldToolOutput = Transcript.ToolOutput(
       id: "old-output",
@@ -187,7 +259,7 @@ struct TranscriptHistoryTransformTests {
       .prompt(.foundationModelsTools("Second")),
       .toolCalls(latestToolCalls),
       .toolOutput(latestToolOutput),
-      .prompt(.foundationModelsTools("Continue")),
+      .prompt(.foundationModelsTools("Continue"))
     ]
 
     let transformed = entries.droppingCompletedToolCalls()
@@ -196,9 +268,7 @@ struct TranscriptHistoryTransformTests {
       "instructions",
       "prompt",
       "prompt",
-      "toolCalls",
-      "toolOutput",
-      "prompt",
+      "prompt"
     ])
     #expect(transformed.contains { entry in
       if case .toolOutput(let output) = entry {
@@ -211,7 +281,7 @@ struct TranscriptHistoryTransformTests {
         return calls.id == "latest-calls"
       }
       return false
-    })
+    } == false)
   }
 
   @Test("Dropping completed tool calls keeps current tool exchange")
@@ -227,7 +297,7 @@ struct TranscriptHistoryTransformTests {
       .instructions(.foundationModelsTools("System")),
       .prompt(.foundationModelsTools("First")),
       .toolCalls(toolCalls),
-      .toolOutput(toolOutput),
+      .toolOutput(toolOutput)
     ]
 
     let transformed = entries.droppingCompletedToolCalls()
@@ -236,7 +306,7 @@ struct TranscriptHistoryTransformTests {
       "instructions",
       "prompt",
       "toolCalls",
-      "toolOutput",
+      "toolOutput"
     ])
     #expect(transformed.contains { entry in
       if case .toolOutput(let output) = entry {
@@ -251,7 +321,7 @@ struct TranscriptHistoryTransformTests {
     let entries: [Transcript.Entry] = [
       .instructions(.foundationModelsTools("System")),
       .prompt(.foundationModelsTools("First")),
-      .prompt(.foundationModelsTools("Second")),
+      .prompt(.foundationModelsTools("Second"))
     ]
 
     let transformed = entries.droppingCompletedToolCalls()
@@ -259,7 +329,7 @@ struct TranscriptHistoryTransformTests {
     #expect(transformed.map { $0.foundationModelsToolsText } == [
       "System",
       "First",
-      "Second",
+      "Second"
     ])
   }
 
@@ -267,7 +337,7 @@ struct TranscriptHistoryTransformTests {
   func summarizingHistoryPreservesEntriesWhenUnderThreshold() async throws {
     let entries: [Transcript.Entry] = [
       .prompt(.foundationModelsTools("First")),
-      .toolOutput(.foundationModelsTools(id: "first-output", text: "First answer")),
+      .toolOutput(.foundationModelsTools(id: "first-output", text: "First answer"))
     ]
 
     let summarized = await entries.summarizingHistory(entryThreshold: 10) { _ in
@@ -282,7 +352,7 @@ struct TranscriptHistoryTransformTests {
   func summarizingHistoryPreservesEntriesWhenLatestEntryIsNotPrompt() async throws {
     let entries: [Transcript.Entry] = [
       .prompt(.foundationModelsTools("First")),
-      .toolOutput(.foundationModelsTools(id: "first-output", text: "First answer")),
+      .toolOutput(.foundationModelsTools(id: "first-output", text: "First answer"))
     ]
 
     let summarized = await entries.summarizingHistory(entryThreshold: 1) { _ in
@@ -299,7 +369,7 @@ struct TranscriptHistoryTransformTests {
       .instructions(.foundationModelsTools("System")),
       .prompt(.foundationModelsTools("First topic.")),
       .toolOutput(.foundationModelsTools(id: "first-output", text: "First answer.")),
-      .prompt(.foundationModelsTools("Second topic.")),
+      .prompt(.foundationModelsTools("Second topic."))
     ]
 
     var receivedPrompt = ""
@@ -318,13 +388,17 @@ struct TranscriptHistoryTransformTests {
     #expect(summarized.count == 2)
     #expect(summarized.map { $0.foundationModelsToolsKind } == [
       "instructions",
-      "prompt",
+      "prompt"
     ])
+    let expectedPostamble =
+      "Do not begin with phrases like \"Based on the context\", \"Based on the facts\", " +
+      "\"Based on the summary\", or any reference to a summary or the facts provided. " +
+      "Treat the summary and facts above as things you naturally remember."
     #expect(summarized.last?.foundationModelsToolsText == """
       Summary of the conversation so far:
       User asked about the first topic.
 
-      Do not begin with phrases like "Based on the context", "Based on the facts", "Based on the summary", or any reference to a summary or the facts provided. Treat the summary and facts above as things you naturally remember.
+      \(expectedPostamble)
 
       Second topic.
       """)
@@ -344,7 +418,7 @@ struct TranscriptHistoryTransformTests {
     let entries: [Transcript.Entry] = [
       .instructions(instructions),
       .prompt(.foundationModelsTools("First topic.")),
-      .prompt(.foundationModelsTools("Second topic.")),
+      .prompt(.foundationModelsTools("Second topic."))
     ]
 
     let summarized = await entries.summarizingHistory(entryThreshold: 1) { _ in
@@ -364,7 +438,7 @@ struct TranscriptHistoryTransformTests {
   func summarizingHistoryUsesCustomPostamble() async throws {
     let entries: [Transcript.Entry] = [
       .prompt(.foundationModelsTools("First topic.")),
-      .prompt(.foundationModelsTools("Second topic.")),
+      .prompt(.foundationModelsTools("Second topic."))
     ]
 
     let summarized = await entries.summarizingHistory(
@@ -388,7 +462,7 @@ struct TranscriptHistoryTransformTests {
   func summarizingHistoryOmitsEmptyPostamble() async throws {
     let entries: [Transcript.Entry] = [
       .prompt(.foundationModelsTools("First topic.")),
-      .prompt(.foundationModelsTools("Second topic.")),
+      .prompt(.foundationModelsTools("Second topic."))
     ]
 
     let summarized = await entries.summarizingHistory(
@@ -418,7 +492,7 @@ struct TranscriptHistoryTransformTests {
     )
     let entries: [Transcript.Entry] = [
       .prompt(.foundationModelsTools("First topic.")),
-      .prompt(latestPrompt),
+      .prompt(latestPrompt)
     ]
 
     let summarized = await entries.summarizingHistory(entryThreshold: 1) { _ in

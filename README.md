@@ -1,13 +1,11 @@
 # FoundationModelsKit
 
-> [!IMPORTANT]
-> Versioned 2.x releases remain available from this repository and existing
-> dependencies continue to resolve unchanged. Active development now lives in
-> [Foundation Models Framework Lab](https://github.com/rudrankriyam/Foundation-Models-Framework-Lab/tree/main/Packages/FoundationModelsKit),
-> which publishes the `FoundationModelsKit` and `FoundationModelsTools` products.
-> See [MIGRATION.md](MIGRATION.md) for the package switch and compatibility notes.
+A reusable Swift package for Apple's Foundation Models framework.
 
-A collection of tools and utilities for Apple's Foundation Models Framework that help working with the language model, better.
+The package has two public products:
+
+- `FoundationModelsKit` provides lightweight transcript, token-budget, and history utilities.
+- `FoundationModelsTools` provides system and web tools and re-exports `FoundationModelsKit` for source compatibility.
 
 ## Table of Contents
 
@@ -15,7 +13,6 @@ A collection of tools and utilities for Apple's Foundation Models Framework that
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
-- [Migration to Foundation Lab](MIGRATION.md)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
   - [Privacy Permissions](#privacy-permissions)
@@ -32,12 +29,13 @@ A collection of tools and utilities for Apple's Foundation Models Framework that
   - [WebTool](#webtool)
 - [Utilities](#utilities)
   - [Token Counting](#token-counting)
+  - [Transcript Text Content](#transcript-text-content)
   - [Transcript History Transforms](#transcript-history-transforms)
 - [Usage Examples](#usage-examples)
   - [Direct Tool Usage](#direct-tool-usage)
   - [Model Integration](#model-integration)
   - [Error Handling](#error-handling)
-- [Advanced Topics](#advanced-topics)
+- [Specialized Topics](#specialized-topics)
   - [Permission Management](#permission-management)
   - [Date Formats](#date-formats)
   - [Return Values](#return-values)
@@ -46,7 +44,7 @@ A collection of tools and utilities for Apple's Foundation Models Framework that
 
 ## Overview
 
-**FoundationModelsTools** provides a set of pre-built tools and utilities that extend the capabilities of models using Apple's Foundation Models Framework. These tools allow you to:
+**FoundationModelsKit** provides reusable model utilities, while **FoundationModelsTools** provides pre-built integrations that extend Apple's Foundation Models framework. Together they allow you to:
 
 - Access and manage calendar events
 - Read and create contacts
@@ -77,20 +75,18 @@ A collection of tools and utilities for Apple's Foundation Models Framework that
 
 ## Installation
 
-### Active Package
-
-For current development, add Foundation Models Framework Lab as a dependency:
+Add FoundationModelsKit as a dependency in your `Package.swift`:
 
 ```swift
 dependencies: [
     .package(
-        url: "https://github.com/rudrankriyam/Foundation-Models-Framework-Lab.git",
+        url: "https://github.com/rryam/FoundationModelsKit.git",
         branch: "main"
     )
 ]
 ```
 
-Choose the lightweight utilities, system tools, or both:
+Choose the lightweight utility product, the tools product, or both:
 
 ```swift
 .target(
@@ -98,28 +94,14 @@ Choose the lightweight utilities, system tools, or both:
     dependencies: [
         .product(
             name: "FoundationModelsKit",
-            package: "foundation-models-framework-lab"
+            package: "FoundationModelsKit"
         ),
         .product(
             name: "FoundationModelsTools",
-            package: "foundation-models-framework-lab"
+            package: "FoundationModelsKit"
         )
     ]
 )
-```
-
-`FoundationModelsTools` re-exports `FoundationModelsKit`, so existing source files
-that only import `FoundationModelsTools` remain compatible.
-
-### Stable 2.x
-
-Applications that prefer the versioned 2.x package can continue using this
-repository without code changes:
-
-```swift
-dependencies: [
-    .package(url: "https://github.com/rryam/FoundationModelsKit", from: "2.0.0")
-]
 ```
 
 ## Quick Start
@@ -689,13 +671,24 @@ let keywordResults = try await webTool.call(arguments: keywordArgs)
 
 ### Token Counting
 
-FoundationModelsTools provides comprehensive token counting and context window management utilities for `Transcript` objects. These utilities help you prevent context overflow and manage long conversations effectively.
+FoundationModelsKit provides comprehensive token counting and context window management utilities for `Transcript` objects. These utilities help you prevent context overflow and manage long conversations effectively.
 
 #### Features
 
 **Estimation Methods:**
-- `estimatedTokenCount` - Basic token counting using Apple's 4.5 characters per token ratio
+- `estimatedTokenCount` - Calibrated token estimation using 4.75 characters per token
 - `safeEstimatedTokenCount` - Conservative estimate with 25% buffer + 100 token overhead
+- `tokenUsage(using:)` - Exact tokenization on OS 26.4+, with an explicitly labeled estimate fallback
+
+`ModelTokenUsage` is the stable `Codable`, `Hashable`, and `Sendable` projection
+used for automation and persisted evidence. Its measurement is `observed`,
+`tokenized`, or `estimated`; its scope is `response`, `session`, or `context`.
+Cached-input and reasoning-output counts remain optional because older APIs do
+not expose them.
+
+On systems that need the estimator fallback, instruction counts include tool
+definition names, descriptions, and conservative framing overhead. Generation
+schema internals are left to Apple's tokenizer where that API is available.
 
 **Context Management:**
 - `isApproachingLimit(threshold:maxTokens:)` - Check if approaching context limits
@@ -734,6 +727,18 @@ let transcript = Transcript(entries: [
 let tokens = transcript.estimatedTokenCount
 print("Estimated tokens: \(tokens)")
 
+// Prefer exact model tokenization on OS 26.4+, with provenance-aware fallback.
+let usage = await transcript.tokenUsage()
+print("\(usage.totalTokenCount) tokens (\(usage.measurement.rawValue))")
+
+#if compiler(>=6.4)
+if #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {
+    let response = try await LanguageModelSession().respond(to: "Hello")
+    let observed = ModelTokenUsage(observing: response.usage)
+    print("\(observed.input.totalTokenCount) in, \(observed.output?.totalTokenCount ?? 0) out")
+}
+#endif
+
 // Get safe estimate with buffer
 let safeTokens = transcript.safeEstimatedTokenCount
 print("Safe estimate: \(safeTokens)")
@@ -767,6 +772,23 @@ let newTranscript = Transcript(entries: trimmedEntries)
 // - Includes as many recent entries as possible within budget
 // - Preserves conversation recency
 ```
+
+### Transcript Text Content
+
+Use transcript text helpers when you need plain text from model transcript
+entries without rewriting segment switches in every app, CLI, or benchmark:
+
+```swift
+let entryText = entry.textContentJoined()
+let latestText = session.transcript.latestResponseText(after: previousEntryCount)
+let recoveredText = session.transcript.latestNonEmptyResponseText(startingAt: previousIndex)
+```
+
+`latestResponseText(after:)` is useful for streaming fallbacks where a session
+has appended the response to its transcript before the caller has captured the
+final string. `latestNonEmptyResponseText(startingAt:)` ignores earlier warmup
+turns and returns `nil` when no non-empty response exists in the requested
+window.
 
 ### Transcript History Transforms
 
@@ -932,7 +954,7 @@ do {
 }
 ```
 
-## Advanced Topics
+## Specialized Topics
 
 ### Permission Management
 
@@ -1010,5 +1032,3 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## License
 
 [MIT License](LICENSE)
-
-[![Star History Chart](https://api.star-history.com/svg?repos=rryam/FoundationModelsKit&type=Date)](https://star-history.com/#rryam/FoundationModelsKit&Date)

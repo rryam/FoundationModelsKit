@@ -8,6 +8,7 @@
 @preconcurrency import CoreLocation
 import Foundation
 import FoundationModels
+import FoundationModelsKit
 @preconcurrency import MapKit
 
 /// A tool for location services and geocoding using CoreLocation and MapKit.
@@ -39,7 +40,7 @@ public struct LocationTool: Tool {
 
   /// Arguments for location operations.
   @Generable
-  public struct Arguments {
+  public struct Arguments: RuntimeCompatibleGenerable {
     /// The action to perform: "current", "geocode", "reverse", "search", "distance"
     @Guide(
       description: "The action to perform: 'current', 'geocode', 'reverse', 'search', 'distance'")
@@ -397,19 +398,14 @@ public struct LocationTool: Tool {
     return formatter.string(from: date)
   }
 
+  @MainActor
   private func requestLocationPermission() async -> GeneratedContent {
     let permissionRequester = PermissionRequester()
-    locationManager.delegate = permissionRequester
+    let requestResult = await permissionRequester.requestAuthorization(using: locationManager)
 
-    #if os(macOS)
-      locationManager.startUpdatingLocation()
-      locationManager.stopUpdatingLocation()
-    #else
-      locationManager.requestWhenInUseAuthorization()
-    #endif
-
-    // Wait for authorization response
-    await permissionRequester.waitForAuthorizationResponse()
+    guard requestResult == .completed else {
+      return createErrorOutput(error: LocationError.authorizationTimedOut)
+    }
 
     // Check the new authorization status
     let authorization = await checkLocationAuthorization()
@@ -611,6 +607,7 @@ enum LocationError: Error, LocalizedError {
   case invalidAction
   case authorizationDenied
   case authorizationNotDetermined
+  case authorizationTimedOut
   case locationServicesDisabled
   case locationUnavailable
   case locationTimeout
@@ -629,6 +626,8 @@ enum LocationError: Error, LocalizedError {
       return "Location access denied. Please grant permission in Settings."
     case .authorizationNotDetermined:
       return "Location permission not yet determined. Please grant permission when prompted."
+    case .authorizationTimedOut:
+      return "Timed out while waiting for location permission."
     case .locationServicesDisabled:
       return "Location services are disabled. Enable Location Services to continue."
     case .locationUnavailable:
@@ -651,20 +650,59 @@ enum LocationError: Error, LocalizedError {
   }
 }
 
+@MainActor
 final class PermissionRequester: NSObject, CLLocationManagerDelegate {
-  private let authorizationUpdated = AsyncStream<Void>.makeStream()
+  private var continuation: CheckedContinuation<PermissionRequestResult, Never>?
+  private var timeoutTask: Task<Void, Never>?
 
-  func waitForAuthorizationResponse() async {
-    for await _ in authorizationUpdated.stream {
-      break
+  func requestAuthorization(
+    using manager: CLLocationManager,
+    timeout: TimeInterval = 8
+  ) async -> PermissionRequestResult {
+    guard manager.authorizationStatus == .notDetermined else {
+      return .completed
+    }
+
+    return await withCheckedContinuation { continuation in
+      self.continuation = continuation
+      manager.delegate = self
+      manager.requestWhenInUseAuthorization()
+      #if os(macOS)
+        manager.startUpdatingLocation()
+      #endif
+
+      timeoutTask = Task { @MainActor [weak self] in
+        do {
+          try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+          self?.finish(result: .timedOut, manager: manager)
+        } catch {
+          // Task cancelled after receiving an authorization response.
+        }
+      }
     }
   }
 
   nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-    let continuation = self.authorizationUpdated.continuation
-    Task { @MainActor in
-      continuation.yield()
-      continuation.finish()
+    Task { @MainActor [weak self] in
+      guard manager.authorizationStatus != .notDetermined else { return }
+      self?.finish(result: .completed, manager: manager)
     }
   }
+
+  private func finish(result: PermissionRequestResult, manager: CLLocationManager) {
+    guard let continuation else { return }
+    timeoutTask?.cancel()
+    timeoutTask = nil
+    #if os(macOS)
+      manager.stopUpdatingLocation()
+    #endif
+    manager.delegate = nil
+    self.continuation = nil
+    continuation.resume(returning: result)
+  }
+}
+
+enum PermissionRequestResult {
+  case completed
+  case timedOut
 }
