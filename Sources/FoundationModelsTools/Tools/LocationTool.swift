@@ -401,10 +401,10 @@ public struct LocationTool: Tool {
   @MainActor
   private func requestLocationPermission() async -> GeneratedContent {
     let permissionRequester = PermissionRequester()
-    let receivedResponse = await permissionRequester.requestAuthorization(using: locationManager)
+    let requestResult = await permissionRequester.requestAuthorization(using: locationManager)
 
-    guard receivedResponse else {
-      return createErrorOutput(error: LocationError.authorizationNotDetermined)
+    guard requestResult == .completed else {
+      return createErrorOutput(error: LocationError.authorizationTimedOut)
     }
 
     // Check the new authorization status
@@ -607,6 +607,7 @@ enum LocationError: Error, LocalizedError {
   case invalidAction
   case authorizationDenied
   case authorizationNotDetermined
+  case authorizationTimedOut
   case locationServicesDisabled
   case locationUnavailable
   case locationTimeout
@@ -625,6 +626,8 @@ enum LocationError: Error, LocalizedError {
       return "Location access denied. Please grant permission in Settings."
     case .authorizationNotDetermined:
       return "Location permission not yet determined. Please grant permission when prompted."
+    case .authorizationTimedOut:
+      return "Timed out while waiting for location permission."
     case .locationServicesDisabled:
       return "Location services are disabled. Enable Location Services to continue."
     case .locationUnavailable:
@@ -649,15 +652,15 @@ enum LocationError: Error, LocalizedError {
 
 @MainActor
 final class PermissionRequester: NSObject, CLLocationManagerDelegate {
-  private var continuation: CheckedContinuation<Bool, Never>?
+  private var continuation: CheckedContinuation<PermissionRequestResult, Never>?
   private var timeoutTask: Task<Void, Never>?
 
   func requestAuthorization(
     using manager: CLLocationManager,
     timeout: TimeInterval = 8
-  ) async -> Bool {
+  ) async -> PermissionRequestResult {
     guard manager.authorizationStatus == .notDetermined else {
-      return true
+      return .completed
     }
 
     return await withCheckedContinuation { continuation in
@@ -671,7 +674,7 @@ final class PermissionRequester: NSObject, CLLocationManagerDelegate {
       timeoutTask = Task { @MainActor [weak self] in
         do {
           try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-          self?.finish(receivedResponse: false, manager: manager)
+          self?.finish(result: .timedOut, manager: manager)
         } catch {
           // Task cancelled after receiving an authorization response.
         }
@@ -682,11 +685,11 @@ final class PermissionRequester: NSObject, CLLocationManagerDelegate {
   nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
     Task { @MainActor [weak self] in
       guard manager.authorizationStatus != .notDetermined else { return }
-      self?.finish(receivedResponse: true, manager: manager)
+      self?.finish(result: .completed, manager: manager)
     }
   }
 
-  private func finish(receivedResponse: Bool, manager: CLLocationManager) {
+  private func finish(result: PermissionRequestResult, manager: CLLocationManager) {
     guard let continuation else { return }
     timeoutTask?.cancel()
     timeoutTask = nil
@@ -695,6 +698,11 @@ final class PermissionRequester: NSObject, CLLocationManagerDelegate {
     #endif
     manager.delegate = nil
     self.continuation = nil
-    continuation.resume(returning: receivedResponse)
+    continuation.resume(returning: result)
   }
+}
+
+enum PermissionRequestResult {
+  case completed
+  case timedOut
 }

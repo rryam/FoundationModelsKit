@@ -135,6 +135,13 @@ struct LocationErrorTests {
     #expect(error.errorDescription != nil)
     #expect(error.errorDescription!.contains("Timed out"))
   }
+
+  @Test("Location permission timeout error has description")
+  func authorizationTimedOutDescription() {
+    let error = LocationError.authorizationTimedOut
+    #expect(error.errorDescription != nil)
+    #expect(error.errorDescription!.contains("permission"))
+  }
 }
 
 @Suite("MusicError Tests")
