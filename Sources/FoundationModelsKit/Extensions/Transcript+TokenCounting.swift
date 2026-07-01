@@ -214,7 +214,7 @@ extension Transcript {
   func foundationModelsKitEstimatedEntriesWithinTokenBudget(
     _ budget: Int
   ) -> [Transcript.Entry] {
-    let contentBudget = estimatedContentBudget(forSafeBudget: budget)
+    let contentBudget = foundationModelsKitContentBudget(forSafeBudget: budget)
     let firstInstruction = self.first(where: \.isInstruction)
     let instructionTokens = firstInstruction?.estimatedTokenCount ?? 0
 
@@ -242,7 +242,7 @@ extension Transcript {
   }
 }
 
-private func estimatedContentBudget(forSafeBudget budget: Int) -> Int {
+func foundationModelsKitContentBudget(forSafeBudget budget: Int) -> Int {
   guard budget > systemOverheadTokens else { return 0 }
   return Int(
     floor(

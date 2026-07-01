@@ -108,9 +108,7 @@ private extension Transcript {
     model: SystemLanguageModel
   ) async -> [Transcript.Entry]? {
     let base = instructions.map { [$0] } ?? []
-    let contentBudget = Int(
-      floor(Double(Swift.max(0, budget)) / (1 + exactTokenSafetyBufferMultiplier))
-    )
+    let contentBudget = foundationModelsKitContentBudget(forSafeBudget: budget)
 
     guard let baseTokens = base.isEmpty
       ? 0

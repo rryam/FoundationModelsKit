@@ -77,6 +77,12 @@ struct TokenCountingTests {
     #expect(trimmedTranscript.safeEstimatedTokenCount <= 220)
   }
 
+  @Test("Content budget reserves system overhead and safety margin")
+  func contentBudgetReservesSystemOverheadAndSafetyMargin() {
+    #expect(foundationModelsKitContentBudget(forSafeBudget: 100) == 0)
+    #expect(foundationModelsKitContentBudget(forSafeBudget: 220) == 96)
+  }
+
   @Test("Token window preserves oversized instructions")
   func tokenWindowPreservesOversizedInstructions() {
     let instruction: Transcript.Entry = .instructions(
