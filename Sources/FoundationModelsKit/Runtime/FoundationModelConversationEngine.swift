@@ -164,6 +164,27 @@ public final class FoundationModelConversationEngine {
         notifyStateChange()
     }
 
+    func slidingWindowTranscript(from entries: [Transcript.Entry]) -> Transcript {
+        let trimmedInstructions = sessionInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInstructions.isEmpty else {
+            return Transcript(entries: entries)
+        }
+
+        let nonInstructionEntries = entries.filter { entry in
+            if case .instructions = entry {
+                return false
+            }
+            return true
+        }
+        let instructionEntry = Transcript.Entry.instructions(
+            Transcript.Instructions(
+                segments: [.text(Transcript.TextSegment(content: trimmedInstructions))],
+                toolDefinitions: []
+            )
+        )
+        return Transcript(entries: [instructionEntry] + nonInstructionEntries)
+    }
+
     public func prewarm(promptPrefix: Prompt? = nil) {
         if let promptPrefix {
             session.prewarm(promptPrefix: promptPrefix)
@@ -289,7 +310,7 @@ private extension FoundationModelConversationEngine {
             effectiveTargetWindowSize,
             using: model
         )
-        let transcript = Transcript(entries: windowEntries)
+        let transcript = slidingWindowTranscript(from: windowEntries)
 
         session = LanguageModelSession(model: model, transcript: transcript)
         sessionCount += 1

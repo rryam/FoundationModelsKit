@@ -141,4 +141,72 @@ struct FoundationModelRuntimeTests {
 
     #expect(engine.effectiveTargetWindowSize == 1)
   }
+
+  @Test("Sliding window transcript preserves recovered instructions")
+  @MainActor
+  func slidingWindowTranscriptPreservesRecoveredInstructions() {
+    let engine = FoundationModelConversationEngine(
+      configuration: FoundationModelConversationConfiguration(
+        baseInstructions: "Answer from the original system prompt.",
+        summaryInstructions: "Summarize.",
+        summaryPromptPreamble: "Summary:",
+        conversationUserLabel: "User:",
+        conversationAssistantLabel: "Assistant:",
+        continuationNote: "Continue from the summary."
+      )
+    )
+    let summary = FoundationModelConversationSummary(
+      summary: "The user is extracting reusable runtime APIs.",
+      keyTopics: ["runtime extraction"],
+      userPreferences: ["Keep FoundationModelsKit as one package."]
+    )
+
+    engine.applyRecoveredConversationSummary(summary)
+
+    let transcript = engine.slidingWindowTranscript(from: [
+      .instructions(.foundationModelsKitTest("Stale instructions")),
+      .prompt(.foundationModelsKitTest("Latest prompt"))
+    ])
+    let entries = Array(transcript)
+
+    guard case .instructions(let instructions) = entries.first else {
+      Issue.record("Expected sliding window transcript to start with instructions")
+      return
+    }
+
+    #expect(instructions.foundationModelsKitTestText.contains("Answer from the original system prompt."))
+    #expect(instructions.foundationModelsKitTestText.contains("The user is extracting reusable runtime APIs."))
+    #expect(instructions.foundationModelsKitTestText.contains("Stale instructions") == false)
+    #expect(entries.count == 2)
+  }
+}
+
+private extension Transcript.Instructions {
+  static func foundationModelsKitTest(_ text: String) -> Self {
+    Self(
+      segments: [.text(Transcript.TextSegment(content: text))],
+      toolDefinitions: []
+    )
+  }
+
+  var foundationModelsKitTestText: String {
+    segments.foundationModelsKitTestText
+  }
+}
+
+private extension Transcript.Prompt {
+  static func foundationModelsKitTest(_ text: String) -> Self {
+    Self(segments: [.text(Transcript.TextSegment(content: text))])
+  }
+}
+
+private extension [Transcript.Segment] {
+  var foundationModelsKitTestText: String {
+    compactMap { segment in
+      if case .text(let text) = segment {
+        return text.content
+      }
+      return nil
+    }.joined()
+  }
 }
