@@ -159,10 +159,13 @@ public struct ContactsTool: Tool {
                     return false
                 }
 
-                return formatContactsOutput(contacts: filteredContacts, query: searchQuery)
+                return formatContactsOutput(
+                    contacts: filteredContacts.map(ContactSearchResult.init),
+                    query: searchQuery
+                )
             }
 
-            return formatContactsOutput(contacts: contacts, query: searchQuery)
+            return formatContactsOutput(contacts: contacts.map(ContactSearchResult.init), query: searchQuery)
         } catch {
             return createErrorOutput(error: error)
         }
@@ -265,17 +268,8 @@ public struct ContactsTool: Tool {
         }
     }
 
-    private func formatContactsOutput(contacts: [CNContact], query: String) -> GeneratedContent {
-        var contactsDescription = ""
-
-        for (index, contact) in contacts.enumerated() {
-            let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
-            let email = contact.emailAddresses.first?.value as String? ?? "No email"
-            let phone = contact.phoneNumbers.first?.value.stringValue ?? "No phone"
-            let org = contact.organizationName.isEmpty ? "" : " (\(contact.organizationName))"
-
-            contactsDescription += "\(index + 1). \(name)\(org) - Email: \(email), Phone: \(phone)\n"
-        }
+    private func formatContactsOutput(contacts: [ContactSearchResult], query: String) -> GeneratedContent {
+        var contactsDescription = Self.formatContactSearchResults(contacts)
 
         if contactsDescription.isEmpty {
             contactsDescription = "No contacts found matching '\(query)'"
@@ -285,6 +279,7 @@ public struct ContactsTool: Tool {
             "status": "success",
             "query": query,
             "count": contacts.count,
+            "contactIds": contacts.map(\.id),
             "results": contactsDescription.trimmingCharacters(in: .whitespacesAndNewlines),
             "message": "Found \(contacts.count) contact(s) matching '\(query)'"
         ])
@@ -296,6 +291,59 @@ public struct ContactsTool: Tool {
             "error": error.localizedDescription,
             "message": "Failed to perform contact operation"
         ])
+    }
+}
+
+struct ContactSearchResult: Sendable {
+    let id: String
+    let givenName: String
+    let familyName: String
+    let email: String?
+    let phone: String?
+    let organization: String?
+
+    init(
+        id: String,
+        givenName: String,
+        familyName: String,
+        email: String? = nil,
+        phone: String? = nil,
+        organization: String? = nil
+    ) {
+        self.id = id
+        self.givenName = givenName
+        self.familyName = familyName
+        self.email = email
+        self.phone = phone
+        self.organization = organization
+    }
+
+    init(contact: CNContact) {
+        self.id = contact.identifier
+        self.givenName = contact.givenName
+        self.familyName = contact.familyName
+        self.email = contact.emailAddresses.first?.value as String?
+        self.phone = contact.phoneNumbers.first?.value.stringValue
+        self.organization = contact.organizationName.isEmpty ? nil : contact.organizationName
+    }
+}
+
+extension ContactsTool {
+    static func formatContactSearchResults(_ contacts: [ContactSearchResult]) -> String {
+        var contactsDescription = ""
+
+        for (index, contact) in contacts.enumerated() {
+            let name = "\(contact.givenName) \(contact.familyName)"
+                .trimmingCharacters(in: .whitespaces)
+            let email = contact.email ?? "No email"
+            let phone = contact.phone ?? "No phone"
+            let org = contact.organization.map { " (\($0))" } ?? ""
+
+            contactsDescription +=
+                "\(index + 1). \(name)\(org) - Contact ID: \(contact.id), Email: \(email), Phone: \(phone)\n"
+        }
+
+        return contactsDescription
     }
 }
 

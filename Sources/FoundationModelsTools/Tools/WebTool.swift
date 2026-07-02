@@ -8,7 +8,6 @@
 import Foundation
 import FoundationModels
 import FoundationModelsKit
-import SwiftUI
 
 /// A tool for web search using the Exa API.
 ///
@@ -19,12 +18,13 @@ import SwiftUI
 /// and `auto` (automatically selects the best type).
 ///
 /// ```swift
-/// // Configure the API key using @AppStorage("exaAPIKey")
+/// // Configure the API key using the system Keychain.
+/// try ExaAPIKeyStore.shared.saveAPIKey("exa_...")
 /// let session = LanguageModelSession(tools: [WebTool()])
 /// let response = try await session.respond(to: "Search for the latest ML advancements")
 /// ```
 ///
-/// - Important: Requires an Exa API key stored in `@AppStorage("exaAPIKey")`.
+/// - Important: Requires an Exa API key stored with `ExaAPIKeyStore`.
 ///   Do not store API keys in client-side code for production apps.
 ///   Use a server-side proxy to make Exa API requests securely.
 public struct WebTool: Tool {
@@ -89,12 +89,16 @@ public struct WebTool: Tool {
   }
 
   private let exaService: ExaWebService
-
-  /// AppStorage for the API key
-  @AppStorage("exaAPIKey") private var exaAPIKey: String = ""
+  private let apiKeyStore: ExaAPIKeyStore
 
   public init() {
     self.exaService = ExaWebService()
+    self.apiKeyStore = .shared
+  }
+
+  public init(apiKeyStore: ExaAPIKeyStore) {
+    self.exaService = ExaWebService()
+    self.apiKeyStore = apiKeyStore
   }
 
   public func call(arguments: Arguments) async throws -> some PromptRepresentable {
@@ -104,6 +108,7 @@ public struct WebTool: Tool {
       return createErrorOutput(for: searchQuery, error: WebError.emptyQuery)
     }
 
+    let exaAPIKey = apiKeyStore.apiKey()
     guard !exaAPIKey.isEmpty else {
       return createErrorOutput(for: searchQuery, error: WebError.missingAPIKey)
     }
@@ -114,7 +119,8 @@ public struct WebTool: Tool {
         numResults: arguments.numResults,
         type: arguments.type,
         includeContents: arguments.includeContents,
-        category: arguments.category
+        category: arguments.category,
+        apiKey: exaAPIKey
       )
       return createSuccessOutput(from: searchData)
     } catch {
@@ -127,12 +133,13 @@ public struct WebTool: Tool {
     numResults: Int?,
     type: String?,
     includeContents: Bool?,
-    category: String?
+    category: String?,
+    apiKey: String
   ) async throws -> SearchData {
     do {
       let exaResponse = try await exaService.search(
         query: query,
-        apiKey: exaAPIKey,
+        apiKey: apiKey,
         numResults: numResults,
         type: type,
         includeContents: includeContents,

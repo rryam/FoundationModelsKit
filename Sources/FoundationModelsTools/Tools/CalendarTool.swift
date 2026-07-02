@@ -216,25 +216,8 @@ public struct CalendarTool: Tool {
 
     let events = eventStore.events(matching: predicate)
 
-    var eventsDescription = ""
-
-    for (index, event) in events.enumerated() {
-      let dateFormatter = DateFormatter()
-      dateFormatter.dateStyle = .medium
-      dateFormatter.timeStyle = .short
-
-      let location = event.location != nil ? " at \(event.location!)" : ""
-      let calendar = event.calendar?.title ?? "Unknown Calendar"
-
-      eventsDescription += "\(index + 1). \(event.title ?? "Untitled")\n"
-      eventsDescription +=
-        "   When: \(dateFormatter.string(from: event.startDate)) - \(dateFormatter.string(from: event.endDate))\n"
-      eventsDescription += "   Calendar: \(calendar)\(location)\n"
-      if let notes = event.notes, !notes.isEmpty {
-        eventsDescription += "   Notes: \(notes.prefix(50))...\n"
-      }
-      eventsDescription += "\n"
-    }
+    let eventSummaries = events.map(CalendarEventSummary.init)
+    var eventsDescription = Self.formatEventQueryResults(eventSummaries)
 
     if eventsDescription.isEmpty {
       eventsDescription = "No events found in the next \(daysToQuery) days"
@@ -244,6 +227,7 @@ public struct CalendarTool: Tool {
       "status": "success",
       "count": events.count,
       "daysQueried": daysToQuery,
+      "eventIds": eventSummaries.map(\.id),
       "events": eventsDescription.trimmingCharacters(in: .whitespacesAndNewlines),
       "message": "Found \(events.count) event(s) in the next \(daysToQuery) days"
     ])
@@ -349,6 +333,70 @@ public struct CalendarTool: Tool {
       "error": error.localizedDescription,
       "message": "Failed to perform calendar operation"
     ])
+  }
+}
+
+struct CalendarEventSummary: Sendable {
+  let id: String
+  let title: String
+  let startDate: Date
+  let endDate: Date
+  let location: String?
+  let calendarTitle: String
+  let notes: String?
+
+  init(
+    id: String,
+    title: String,
+    startDate: Date,
+    endDate: Date,
+    location: String? = nil,
+    calendarTitle: String,
+    notes: String? = nil
+  ) {
+    self.id = id
+    self.title = title
+    self.startDate = startDate
+    self.endDate = endDate
+    self.location = location
+    self.calendarTitle = calendarTitle
+    self.notes = notes
+  }
+
+  init(event: EKEvent) {
+    self.id = event.eventIdentifier ?? ""
+    self.title = event.title ?? "Untitled"
+    self.startDate = event.startDate
+    self.endDate = event.endDate
+    self.location = event.location
+    self.calendarTitle = event.calendar?.title ?? "Unknown Calendar"
+    self.notes = event.notes
+  }
+}
+
+extension CalendarTool {
+  static func formatEventQueryResults(_ events: [CalendarEventSummary]) -> String {
+    var eventsDescription = ""
+
+    for (index, event) in events.enumerated() {
+      let dateFormatter = DateFormatter()
+      dateFormatter.dateStyle = .medium
+      dateFormatter.timeStyle = .short
+
+      let location = event.location != nil ? " at \(event.location!)" : ""
+
+      eventsDescription += "\(index + 1). \(event.title)\n"
+      eventsDescription += "   Event ID: \(event.id)\n"
+      eventsDescription +=
+        "   When: \(dateFormatter.string(from: event.startDate)) - \(dateFormatter.string(from: event.endDate))\n"
+      eventsDescription += "   Calendar: \(event.calendarTitle)\(location)\n"
+      if let notes = event.notes, !notes.isEmpty {
+        eventsDescription += "   Notes: \(notes.prefix(50))...\n"
+      }
+      eventsDescription += "\n"
+    }
+
+    return eventsDescription
   }
 }
 
