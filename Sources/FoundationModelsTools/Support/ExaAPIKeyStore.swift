@@ -13,15 +13,31 @@ public struct ExaAPIKeyStore: @unchecked Sendable {
   private let service: String
   private let account: String
   private let legacyUserDefaults: UserDefaults
+  private let keychain: ExaAPIKeychain
 
   public init(
     service: String = "com.rryam.FoundationModelsTools.exa",
     account: String = "apiKey",
     legacyUserDefaults: UserDefaults = .standard
   ) {
+    self.init(
+      service: service,
+      account: account,
+      legacyUserDefaults: legacyUserDefaults,
+      keychain: .live
+    )
+  }
+
+  init(
+    service: String,
+    account: String,
+    legacyUserDefaults: UserDefaults,
+    keychain: ExaAPIKeychain
+  ) {
     self.service = service
     self.account = account
     self.legacyUserDefaults = legacyUserDefaults
+    self.keychain = keychain
   }
 
   /// Returns the stored API key, migrating the legacy UserDefaults value if needed.
@@ -42,7 +58,6 @@ public struct ExaAPIKeyStore: @unchecked Sendable {
       try saveAPIKey(legacyKey)
       legacyUserDefaults.removeObject(forKey: Self.legacyUserDefaultsKey)
     } catch {
-      legacyUserDefaults.removeObject(forKey: Self.legacyUserDefaultsKey)
       return legacyKey
     }
 
@@ -58,18 +73,13 @@ public struct ExaAPIKeyStore: @unchecked Sendable {
     }
 
     let encodedKey = Data(trimmedKey.utf8)
-    let updateStatus = SecItemUpdate(
-      query as CFDictionary,
-      [kSecValueData: encodedKey] as CFDictionary
-    )
+    let updateStatus = keychain.update(query, encodedKey)
 
     switch updateStatus {
     case errSecSuccess:
       return
     case errSecItemNotFound:
-      var attributes = query
-      attributes[kSecValueData as String] = encodedKey
-      let addStatus = SecItemAdd(attributes as CFDictionary, nil)
+      let addStatus = keychain.add(query, encodedKey)
       guard addStatus == errSecSuccess else {
         throw ExaAPIKeyStoreError.keychainWriteFailed(addStatus)
       }
@@ -79,7 +89,7 @@ public struct ExaAPIKeyStore: @unchecked Sendable {
   }
 
   public func deleteAPIKey() throws {
-    let status = SecItemDelete(query as CFDictionary)
+    let status = keychain.delete(query)
     guard status == errSecSuccess || status == errSecItemNotFound else {
       throw ExaAPIKeyStoreError.keychainDeleteFailed(status)
     }
@@ -90,9 +100,8 @@ public struct ExaAPIKeyStore: @unchecked Sendable {
     lookup[kSecReturnData as String] = true
     lookup[kSecMatchLimit as String] = kSecMatchLimitOne
 
-    var item: CFTypeRef?
-    let status = SecItemCopyMatching(lookup as CFDictionary, &item)
-    guard status == errSecSuccess, let data = item as? Data else {
+    let result = keychain.copyMatching(lookup)
+    guard result.status == errSecSuccess, let data = result.data else {
       return nil
     }
 
@@ -106,6 +115,32 @@ public struct ExaAPIKeyStore: @unchecked Sendable {
       kSecAttrAccount as String: account
     ]
   }
+}
+
+struct ExaAPIKeychain: @unchecked Sendable {
+  var copyMatching: @Sendable ([String: Any]) -> (status: OSStatus, data: Data?)
+  var update: @Sendable ([String: Any], Data) -> OSStatus
+  var add: @Sendable ([String: Any], Data) -> OSStatus
+  var delete: @Sendable ([String: Any]) -> OSStatus
+
+  static let live = ExaAPIKeychain(
+    copyMatching: { query in
+      var item: CFTypeRef?
+      let status = SecItemCopyMatching(query as CFDictionary, &item)
+      return (status, item as? Data)
+    },
+    update: { query, data in
+      SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+    },
+    add: { query, data in
+      var attributes = query
+      attributes[kSecValueData as String] = data
+      return SecItemAdd(attributes as CFDictionary, nil)
+    },
+    delete: { query in
+      SecItemDelete(query as CFDictionary)
+    }
+  )
 }
 
 public enum ExaAPIKeyStoreError: Error, LocalizedError {
