@@ -42,7 +42,8 @@ public struct ExaAPIKeyStore: @unchecked Sendable {
       try saveAPIKey(legacyKey)
       legacyUserDefaults.removeObject(forKey: Self.legacyUserDefaultsKey)
     } catch {
-      return ""
+      legacyUserDefaults.removeObject(forKey: Self.legacyUserDefaultsKey)
+      return legacyKey
     }
 
     return legacyKey
