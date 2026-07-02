@@ -193,7 +193,7 @@ public struct RemindersTool: Tool {
         "title": reminder.title ?? "",
         "list": reminder.calendar?.title ?? "",
         "dueDate": formatDateComponents(reminder.dueDateComponents),
-        "priority": getPriorityString(reminder.priority)
+        "priority": Self.getPriorityString(reminder.priority)
       ])
     } catch {
       return createErrorOutput(error: error)
@@ -248,26 +248,7 @@ public struct RemindersTool: Tool {
       return false
     }
 
-    var remindersDescription = ""
-
-    for (index, reminder) in reminders.enumerated() {
-      let completed = reminder.isCompleted ? "[x]" : "[ ]"
-      let priority = getPriorityString(reminder.priority)
-      let dueDate = formatReminderDueDate(reminder.dueDate)
-
-      remindersDescription += "\(index + 1). \(completed) \(reminder.title)\n"
-      remindersDescription += "   List: \(reminder.listName)\n"
-      if !dueDate.isEmpty {
-        remindersDescription += "   Due: \(dueDate)\n"
-      }
-      if priority != "None" {
-        remindersDescription += "   Priority: \(priority)\n"
-      }
-      if let notes = reminder.notes, !notes.isEmpty {
-        remindersDescription += "   Notes: \(notes.prefix(50))...\n"
-      }
-      remindersDescription += "\n"
-    }
+    var remindersDescription = Self.formatReminderQueryResults(reminders)
 
     if remindersDescription.isEmpty {
       remindersDescription = "No reminders found with filter '\(filter)'"
@@ -277,6 +258,7 @@ public struct RemindersTool: Tool {
       "status": "success",
       "filter": filter,
       "count": reminders.count,
+      "reminderIds": reminders.map(\.id),
       "reminders": remindersDescription.trimmingCharacters(in: .whitespacesAndNewlines),
       "message": "Found \(reminders.count) reminder(s)"
     ])
@@ -370,7 +352,7 @@ public struct RemindersTool: Tool {
         "title": reminder.title ?? "",
         "list": reminder.calendar?.title ?? "",
         "dueDate": formatDateComponents(reminder.dueDateComponents),
-        "priority": getPriorityString(reminder.priority)
+        "priority": Self.getPriorityString(reminder.priority)
       ])
     } catch {
       return createErrorOutput(error: error)
@@ -448,7 +430,7 @@ public struct RemindersTool: Tool {
     return formatter.string(from: date)
   }
 
-  private func formatReminderDueDate(_ date: Date?) -> String {
+  private static func formatReminderDueDate(_ date: Date?) -> String {
     guard let date else { return "" }
 
     let formatter = DateFormatter()
@@ -457,7 +439,7 @@ public struct RemindersTool: Tool {
     return formatter.string(from: date)
   }
 
-  private func getPriorityString(_ priority: Int) -> String {
+  private static func getPriorityString(_ priority: Int) -> String {
     switch priority {
     case 1...3:
       return "High"
@@ -479,7 +461,8 @@ public struct RemindersTool: Tool {
   }
 }
 
-private struct ReminderSnapshot: Sendable {
+struct ReminderSnapshot: Sendable {
+  let id: String
   let title: String
   let listName: String
   let dueDate: Date?
@@ -488,12 +471,59 @@ private struct ReminderSnapshot: Sendable {
   let isCompleted: Bool
 
   init(reminder: EKReminder) {
+    self.id = reminder.calendarItemIdentifier
     self.title = reminder.title ?? "Untitled"
     self.listName = reminder.calendar?.title ?? "Unknown List"
     self.dueDate = reminder.dueDateComponents?.date
     self.priority = reminder.priority
     self.notes = reminder.notes
     self.isCompleted = reminder.isCompleted
+  }
+
+  init(
+    id: String,
+    title: String,
+    listName: String,
+    dueDate: Date? = nil,
+    priority: Int = 0,
+    notes: String? = nil,
+    isCompleted: Bool = false
+  ) {
+    self.id = id
+    self.title = title
+    self.listName = listName
+    self.dueDate = dueDate
+    self.priority = priority
+    self.notes = notes
+    self.isCompleted = isCompleted
+  }
+}
+
+extension RemindersTool {
+  static func formatReminderQueryResults(_ reminders: [ReminderSnapshot]) -> String {
+    var remindersDescription = ""
+
+    for (index, reminder) in reminders.enumerated() {
+      let completed = reminder.isCompleted ? "[x]" : "[ ]"
+      let priority = Self.getPriorityString(reminder.priority)
+      let dueDate = Self.formatReminderDueDate(reminder.dueDate)
+
+      remindersDescription += "\(index + 1). \(completed) \(reminder.title)\n"
+      remindersDescription += "   Reminder ID: \(reminder.id)\n"
+      remindersDescription += "   List: \(reminder.listName)\n"
+      if !dueDate.isEmpty {
+        remindersDescription += "   Due: \(dueDate)\n"
+      }
+      if priority != "None" {
+        remindersDescription += "   Priority: \(priority)\n"
+      }
+      if let notes = reminder.notes, !notes.isEmpty {
+        remindersDescription += "   Notes: \(notes.prefix(50))...\n"
+      }
+      remindersDescription += "\n"
+    }
+
+    return remindersDescription
   }
 }
 
