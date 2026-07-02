@@ -97,4 +97,25 @@ struct ExaAPIKeyStoreTests {
     )
     #expect(reloadedStore.apiKey() == "legacy-exa-key")
   }
+
+  @Test("Legacy UserDefaults API key is preserved when Keychain migration fails")
+  func legacyUserDefaultsAPIKeySurvivesFailedKeychainMigration() throws {
+    let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+    let store = ExaAPIKeyStore(
+      service: "FoundationModelsToolsTests.\(UUID().uuidString)",
+      account: "apiKey",
+      legacyUserDefaults: defaults,
+      keychain: ExaAPIKeychain(
+        copyMatching: { _ in (errSecItemNotFound, nil) },
+        update: { _, _ in errSecItemNotFound },
+        add: { _, _ in errSecNotAvailable },
+        delete: { _ in errSecSuccess }
+      )
+    )
+
+    defaults.set("legacy-exa-key", forKey: ExaAPIKeyStore.legacyUserDefaultsKey)
+
+    #expect(store.apiKey() == "legacy-exa-key")
+    #expect(defaults.string(forKey: ExaAPIKeyStore.legacyUserDefaultsKey) == "legacy-exa-key")
+  }
 }
