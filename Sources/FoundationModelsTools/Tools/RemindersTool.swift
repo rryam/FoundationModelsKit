@@ -1,81 +1,422 @@
-//
-//  RemindersTool.swift
-//  FoundationLab
-//
-//  Created by Rudrank Riyam on 6/17/25.
-//
-
-@preconcurrency import EventKit
 import Foundation
 import FoundationModels
 import FoundationModelsKit
 
-/// A tool for managing reminders using EventKit.
-///
-/// Use `RemindersTool` for create, read, update, complete, and delete operations
-/// for reminders. It integrates with the system Reminders app.
-///
-/// The following actions are supported:
-/// - `create`: Create a new reminder
-/// - `query`: Query reminders with optional filters
-/// - `complete`: Mark a reminder as completed
-/// - `update`: Update an existing reminder
-/// - `delete`: Delete a reminder
-///
-/// Query filters include: `all`, `incomplete`, `completed`, `today`, and `overdue`.
-///
-/// ```swift
-/// let session = LanguageModelSession(tools: [RemindersTool()])
-/// let response = try await session.respond(to: "Remind me to buy groceries tomorrow")
-/// ```
-///
-/// - Important: Requires Reminders entitlement, `NSRemindersUsageDescription` in Info.plist,
-///   and user permission at runtime.
-public struct RemindersTool: Tool {
+/// Read-only Reminders access. This tool cannot create, update, complete, or delete reminders.
+public struct RemindersReadTool: Tool {
+  public let name = "readReminders"
+  public let description = "Query reminders with an optional status or date filter"
 
-  /// The name of the tool, used for identification.
-  public let name = "manageReminders"
-  /// A brief description of the tool's functionality.
-  public let description =
-    "Create, read, update, complete, and query reminders from the Reminders app"
-
-  /// Arguments for reminder operations.
   @Generable
   public struct Arguments: RuntimeCompatibleGenerable {
-    /// The action to perform: "create", "query", "complete", "update", "delete"
-    @Guide(description: "The action to perform: 'create', 'query', 'complete', 'update', 'delete'")
+    @Guide(description: "Filter: 'all', 'incomplete', 'completed', 'today', or 'overdue'")
+    public var filter: String?
+
+    public init(filter: String? = nil) {
+      self.filter = filter
+    }
+  }
+
+  private let service: any RemindersReading
+  private let now: @Sendable () -> Date
+
+  public init(
+    service: any RemindersReading,
+    now: @escaping @Sendable () -> Date = Date.init
+  ) {
+    self.service = service
+    self.now = now
+  }
+
+  public func call(arguments: Arguments) async throws -> GeneratedContent {
+    let authorized: Bool
+    do {
+      authorized = try await service.requestRemindersReadAccess()
+    } catch {
+      throw RemindersToolError.accessDenied
+    }
+    guard authorized else {
+      throw RemindersToolError.accessDenied
+    }
+
+    let filter = Self.filter(from: arguments.filter)
+    var reminders = try await service.reminders(matching: filter, now: now())
+    reminders.sort(by: Self.sort)
+    let description = Self.formatReminderQueryResults(reminders)
+
+    return GeneratedContent(properties: [
+      "status": "success",
+      "filter": filter.rawValue,
+      "count": reminders.count,
+      "reminderIds": reminders.map(\.id),
+      "reminders": description.isEmpty
+        ? "No reminders found with filter '\(filter.rawValue)'"
+        : description.trimmingCharacters(in: .whitespacesAndNewlines),
+      "message": "Found \(reminders.count) reminder(s)"
+    ])
+  }
+
+  private static func filter(from value: String?) -> ReminderQueryFilter {
+    guard let value else { return .incomplete }
+    return ReminderQueryFilter(rawValue: value.lowercased()) ?? .incomplete
+  }
+
+  private static func sort(_ lhs: ReminderRecord, _ rhs: ReminderRecord) -> Bool {
+    if lhs.isCompleted != rhs.isCompleted {
+      return !lhs.isCompleted
+    }
+    if let lhsDate = lhs.dueDate, let rhsDate = rhs.dueDate {
+      return lhsDate < rhsDate
+    }
+    return lhs.dueDate != nil && rhs.dueDate == nil
+  }
+
+  static func formatReminderQueryResults(_ reminders: [ReminderRecord]) -> String {
+    reminders.enumerated().map { index, reminder in
+      var lines = [
+        "\(index + 1). \(reminder.isCompleted ? "[x]" : "[ ]") \(reminder.title)",
+        "   Reminder ID: \(reminder.id)",
+        "   List: \(reminder.listName)"
+      ]
+      if let dueDate = reminder.dueDate {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        lines.append("   Due: \(formatter.string(from: dueDate))")
+      }
+      if reminder.priority != .none {
+        lines.append("   Priority: \(reminder.priority.rawValue.capitalized)")
+      }
+      if let notes = reminder.notes, !notes.isEmpty {
+        lines.append("   Notes: \(notes.prefix(50))...")
+      }
+      return lines.joined(separator: "\n")
+    }.joined(separator: "\n\n")
+  }
+}
+
+/// Reminders mutations guarded by an app-owned confirmation provider.
+public struct RemindersMutationTool: Tool {
+  public let name = "mutateReminders"
+  public let description =
+    "Create, update, complete, or delete a reminder after host-app confirmation"
+
+  @Generable
+  public struct Arguments: RuntimeCompatibleGenerable {
+    @Guide(description: "The mutation action: 'create', 'complete', 'update', or 'delete'")
     public var action: String
 
-    /// Title of the reminder
-    @Guide(description: "Title of the reminder")
+    @Guide(description: "Reminder title")
     public var title: String?
 
-    /// Notes for the reminder
-    @Guide(description: "Notes for the reminder")
+    @Guide(description: "Reminder notes")
     public var notes: String?
 
-    /// Due date in format YYYY-MM-DD HH:mm:ss (24-hour format). Examples: '2025-01-15 17:00:00' for tomorrow at 5 PM
-    @Guide(
-      description:
-        "Due date in format YYYY-MM-DD HH:mm:ss (24-hour format). Examples: '2025-01-15 17:00:00' for tomorrow at 5 PM"
-    )
+    @Guide(description: "Due date in format YYYY-MM-DD HH:mm:ss, or 'none' when updating")
     public var dueDate: String?
 
-    /// Priority level: "none", "low", "medium", "high"
-    @Guide(description: "Priority level: 'none', 'low', 'medium', 'high'")
+    @Guide(description: "Priority: 'none', 'low', 'medium', or 'high'")
     public var priority: String?
 
-    /// List name (defaults to default reminders list)
-    @Guide(description: "List name (defaults to default reminders list)")
+    @Guide(description: "Reminder list name; the default list is used when omitted")
     public var listName: String?
 
-    /// Reminder identifier for updating/completing
-    @Guide(description: "Reminder identifier for updating/completing")
+    @Guide(description: "Reminder identifier for complete, update, or delete")
     public var reminderId: String?
 
-    /// Filter for querying: "all", "incomplete", "completed", "today", "overdue"
-    @Guide(description: "Filter for querying: 'all', 'incomplete', 'completed', 'today', 'overdue'")
-    public var filter: String?
+    public init(
+      action: String = "",
+      title: String? = nil,
+      notes: String? = nil,
+      dueDate: String? = nil,
+      priority: String? = nil,
+      listName: String? = nil,
+      reminderId: String? = nil
+    ) {
+      self.action = action
+      self.title = title
+      self.notes = notes
+      self.dueDate = dueDate
+      self.priority = priority
+      self.listName = listName
+      self.reminderId = reminderId
+    }
+  }
+
+  private enum PreparedMutation: Sendable {
+    case create(ReminderDraft)
+    case complete(id: String)
+    case update(id: String, changes: ReminderChanges)
+    case delete(id: String)
+  }
+
+  private let service: any RemindersMutating
+  private let executor: ToolMutationExecutor
+  private let now: @Sendable () -> Date
+
+  public init(
+    service: any RemindersMutating,
+    confirmation: any ToolMutationConfirming,
+    now: @escaping @Sendable () -> Date = Date.init
+  ) {
+    self.service = service
+    self.executor = ToolMutationExecutor(confirmer: confirmation, now: now)
+    self.now = now
+  }
+
+  init(
+    service: any RemindersMutating,
+    executor: ToolMutationExecutor,
+    now: @escaping @Sendable () -> Date
+  ) {
+    self.service = service
+    self.executor = executor
+    self.now = now
+  }
+
+  public func execute(
+    arguments: Arguments
+  ) async throws -> ToolMutationExecution<ReminderRecord> {
+    let prepared = try prepare(arguments)
+    let request = mutationRequest(for: prepared)
+    let service = service
+    let now = now
+
+    return try await executor.execute(
+      request,
+      resourceID: { $0.id },
+      operation: {
+        let authorized: Bool
+        do {
+          authorized = try await service.requestRemindersMutationAccess()
+        } catch {
+          throw ToolMutationOperationError(
+            failureDescription: error.localizedDescription,
+            commitState: .notAttempted
+          )
+        }
+
+        guard authorized else {
+          throw ToolMutationOperationError(
+            failureDescription: RemindersToolError.accessDenied.localizedDescription,
+            commitState: .notAttempted
+          )
+        }
+
+        do {
+          let record: ReminderRecord?
+          switch prepared {
+          case .create(let draft):
+            record = try await service.createReminder(draft)
+          case .complete(let id):
+            record = try await service.completeReminder(id: id, at: now())
+          case .update(let id, let changes):
+            record = try await service.updateReminder(id: id, changes: changes)
+          case .delete(let id):
+            record = try await service.deleteReminder(id: id)
+          }
+
+          guard let record else {
+            throw ToolMutationOperationError(
+              failureDescription: RemindersToolError.reminderNotFound.localizedDescription,
+              commitState: .notAttempted
+            )
+          }
+          return record
+        } catch let error as ToolMutationOperationError {
+          throw error
+        } catch {
+          throw ToolMutationOperationError(
+            failureDescription: error.localizedDescription,
+            commitState: .unknown
+          )
+        }
+      }
+    )
+  }
+
+  public func call(arguments: Arguments) async throws -> GeneratedContent {
+    let execution = try await execute(arguments: arguments)
+    let reminder = execution.value
+    let action = execution.receipt.request.action
+
+    return GeneratedContent(properties: [
+      "status": "success",
+      "message": Self.successMessage(for: action),
+      "receiptId": execution.receipt.request.id.uuidString,
+      "receiptStatus": execution.receipt.status.rawValue,
+      "commitState": execution.receipt.commitState.rawValue,
+      "reminderId": reminder.id,
+      "title": reminder.title,
+      "list": reminder.listName,
+      "dueDate": RemindersToolDateFormatter.string(from: reminder.dueDate),
+      "priority": reminder.priority.rawValue.capitalized,
+      "completedAt": RemindersToolDateFormatter.string(from: reminder.completionDate)
+    ])
+  }
+
+  private func prepare(_ arguments: Arguments) throws -> PreparedMutation {
+    switch arguments.action.lowercased() {
+    case "create":
+      guard let title = arguments.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !title.isEmpty
+      else {
+        throw RemindersToolError.missingTitle
+      }
+      return .create(
+        ReminderDraft(
+          title: title,
+          notes: arguments.notes,
+          dueDate: try RemindersToolDateFormatter.optionalDate(from: arguments.dueDate),
+          priority: try priority(from: arguments.priority) ?? .none,
+          listName: arguments.listName
+        )
+      )
+    case "complete":
+      return .complete(id: try reminderID(from: arguments))
+    case "update":
+      guard
+        arguments.title != nil || arguments.notes != nil || arguments.dueDate != nil
+          || arguments.priority != nil
+      else {
+        throw RemindersToolError.noChanges
+      }
+      let clearDueDate = arguments.dueDate?.lowercased() == "none"
+      let dueDate =
+        clearDueDate
+        ? nil
+        : try RemindersToolDateFormatter.optionalDate(from: arguments.dueDate)
+      return .update(
+        id: try reminderID(from: arguments),
+        changes: ReminderChanges(
+          title: arguments.title,
+          notes: arguments.notes,
+          dueDate: dueDate,
+          clearDueDate: clearDueDate,
+          priority: try priority(from: arguments.priority)
+        )
+      )
+    case "delete":
+      return .delete(id: try reminderID(from: arguments))
+    default:
+      throw RemindersToolError.invalidMutationAction
+    }
+  }
+
+  private func reminderID(from arguments: Arguments) throws -> String {
+    guard let reminderID = arguments.reminderId, !reminderID.isEmpty else {
+      throw RemindersToolError.missingReminderID
+    }
+    return reminderID
+  }
+
+  private func priority(from value: String?) throws -> ReminderPriority? {
+    guard let value else { return nil }
+    guard let priority = ReminderPriority(rawValue: value.lowercased()) else {
+      throw RemindersToolError.invalidPriority
+    }
+    return priority
+  }
+
+  private func mutationRequest(for mutation: PreparedMutation) -> ToolMutationRequest {
+    switch mutation {
+    case .create(let draft):
+      ToolMutationRequest(
+        toolName: name,
+        action: "create",
+        summary: "Create reminder '\(draft.title)'",
+        details: mutationDetails(for: draft)
+      )
+    case .complete(let id):
+      ToolMutationRequest(
+        toolName: name,
+        action: "complete",
+        summary: "Mark reminder '\(id)' complete",
+        resourceID: id
+      )
+    case .update(let id, let changes):
+      ToolMutationRequest(
+        toolName: name,
+        action: "update",
+        summary: "Update reminder '\(changes.title ?? id)'",
+        details: mutationDetails(for: changes),
+        resourceID: id
+      )
+    case .delete(let id):
+      ToolMutationRequest(
+        toolName: name,
+        action: "delete",
+        summary: "Delete reminder '\(id)'",
+        resourceID: id,
+        isDestructive: true
+      )
+    }
+  }
+
+  private func mutationDetails(for draft: ReminderDraft) -> [ToolMutationDetail] {
+    [
+      ToolMutationDetail(label: "Title", value: draft.title),
+      optionalDetail(label: "Notes", value: draft.notes),
+      draft.dueDate.map {
+        ToolMutationDetail(label: "Due", value: RemindersToolDateFormatter.string(from: $0))
+      },
+      ToolMutationDetail(label: "Priority", value: draft.priority.rawValue),
+      optionalDetail(label: "List", value: draft.listName)
+    ].compactMap { $0 }
+  }
+
+  private func mutationDetails(for changes: ReminderChanges) -> [ToolMutationDetail] {
+    [
+      optionalDetail(label: "Title", value: changes.title),
+      optionalDetail(label: "Notes", value: changes.notes),
+      changes.clearDueDate
+        ? ToolMutationDetail(label: "Due", value: "none")
+        : changes.dueDate.map {
+          ToolMutationDetail(label: "Due", value: RemindersToolDateFormatter.string(from: $0))
+        },
+      changes.priority.map {
+        ToolMutationDetail(label: "Priority", value: $0.rawValue)
+      }
+    ].compactMap { $0 }
+  }
+
+  private func optionalDetail(label: String, value: String?) -> ToolMutationDetail? {
+    value.map { ToolMutationDetail(label: label, value: $0) }
+  }
+
+  private static func successMessage(for action: String) -> String {
+    switch action {
+    case "create": "Reminder created successfully"
+    case "complete": "Reminder completed successfully"
+    case "update": "Reminder updated successfully"
+    case "delete": "Reminder deleted successfully"
+    default: "Reminder mutation committed successfully"
+    }
+  }
+}
+
+/// Backward-compatible combined Reminders tool. New code should register split tools.
+@available(
+  *,
+  deprecated,
+  message:
+    "Use RemindersReadTool and RemindersMutationTool so mutations require explicit confirmation."
+)
+public struct RemindersTool: Tool {
+  public let name = "manageReminders"
+  public let description = "Read reminders; mutations require host-app confirmation"
+
+  @Generable
+  public struct Arguments: RuntimeCompatibleGenerable {
+    @Guide(description: "The action: 'create', 'query', 'complete', 'update', or 'delete'")
+    public var action: String
+    @Guide(description: "Reminder title") public var title: String?
+    @Guide(description: "Reminder notes") public var notes: String?
+    @Guide(description: "Due date") public var dueDate: String?
+    @Guide(description: "Priority") public var priority: String?
+    @Guide(description: "List name") public var listName: String?
+    @Guide(description: "Reminder identifier") public var reminderId: String?
+    @Guide(description: "Query filter") public var filter: String?
 
     public init(
       action: String = "",
@@ -98,454 +439,152 @@ public struct RemindersTool: Tool {
     }
   }
 
-  nonisolated(unsafe) private let eventStore = EKEventStore()
+  private let readTool: RemindersReadTool
+  private let mutationTool: RemindersMutationTool?
 
-  public init() {}
+  public init() {
+    let service = EventKitRemindersService()
+    self.readTool = RemindersReadTool(service: service)
+    self.mutationTool = nil
+  }
+
+  public init(
+    readService: any RemindersReading,
+    mutationService: any RemindersMutating,
+    confirmation: any ToolMutationConfirming
+  ) {
+    self.readTool = RemindersReadTool(service: readService)
+    self.mutationTool = RemindersMutationTool(
+      service: mutationService,
+      confirmation: confirmation
+    )
+  }
+
+  public init(confirmation: any ToolMutationConfirming) {
+    let service = EventKitRemindersService()
+    self.init(
+      readService: service,
+      mutationService: service,
+      confirmation: confirmation
+    )
+  }
 
   public func call(arguments: Arguments) async throws -> some PromptRepresentable {
-    // Request access if needed
-    let authorized = await requestAccess()
-    guard authorized else {
-      return createErrorOutput(error: RemindersError.accessDenied)
-    }
-
     switch arguments.action.lowercased() {
-    case "create":
-      return try createReminder(arguments: arguments)
     case "query":
-      return await queryReminders(arguments: arguments)
-    case "complete":
-      return try completeReminder(reminderId: arguments.reminderId)
-    case "update":
-      return try updateReminder(arguments: arguments)
-    case "delete":
-      return try deleteReminder(reminderId: arguments.reminderId)
-    default:
-      return createErrorOutput(error: RemindersError.invalidAction)
-    }
-  }
-
-  private func requestAccess() async -> Bool {
-    do {
-      if #available(macOS 14.0, iOS 17.0, *) {
-        return try await eventStore.requestFullAccessToReminders()
-      } else {
-        return try await eventStore.requestAccess(to: .reminder)
-      }
-    } catch {
-      return false
-    }
-  }
-
-  private func createReminder(arguments: Arguments) throws -> GeneratedContent {
-    guard let title = arguments.title, !title.isEmpty else {
-      return createErrorOutput(error: RemindersError.missingTitle)
-    }
-
-    let reminder = EKReminder(eventStore: eventStore)
-    reminder.title = title
-
-    if let notes = arguments.notes {
-      reminder.notes = notes
-    }
-
-    if let dueDateString = arguments.dueDate,
-      let dueDate = parseDate(dueDateString) {
-      reminder.dueDateComponents = Calendar.current.dateComponents(
-        [.year, .month, .day, .hour, .minute],
-        from: dueDate
-      )
-    }
-
-    // Set priority
-    if let priorityString = arguments.priority {
-      switch priorityString.lowercased() {
-      case "high":
-        reminder.priority = 1
-      case "medium":
-        reminder.priority = 5
-      case "low":
-        reminder.priority = 9
-      default:
-        reminder.priority = 0  // none
-      }
-    }
-
-    // Set calendar (list)
-    if let listName = arguments.listName {
-      let calendars = eventStore.calendars(for: .reminder)
-      if let calendar = calendars.first(where: { $0.title == listName }) {
-        reminder.calendar = calendar
-      } else {
-        reminder.calendar = eventStore.defaultCalendarForNewReminders()
-      }
-    } else {
-      reminder.calendar = eventStore.defaultCalendarForNewReminders()
-    }
-
-    do {
-      try eventStore.save(reminder, commit: true)
-
-      return GeneratedContent(properties: [
-        "status": "success",
-        "message": "Reminder created successfully",
-        "reminderId": reminder.calendarItemIdentifier,
-        "title": reminder.title ?? "",
-        "list": reminder.calendar?.title ?? "",
-        "dueDate": formatDateComponents(reminder.dueDateComponents),
-        "priority": Self.getPriorityString(reminder.priority)
-      ])
-    } catch {
-      return createErrorOutput(error: error)
-    }
-  }
-
-  private func queryReminders(arguments: Arguments) async -> GeneratedContent {
-    let calendars = eventStore.calendars(for: .reminder)
-    var predicate: NSPredicate
-
-    let filter = arguments.filter?.lowercased() ?? "incomplete"
-
-    switch filter {
-    case "all":
-      predicate = eventStore.predicateForReminders(in: calendars)
-    case "completed":
-      predicate = eventStore.predicateForCompletedReminders(
-        withCompletionDateStarting: nil, ending: nil, calendars: calendars)
-    case "today":
-      let startOfDay = Calendar.current.startOfDay(for: Date())
-      let endOfDay = Calendar.current.date(byAdding: .day, value: 1, to: startOfDay)!
-      predicate = eventStore.predicateForIncompleteReminders(
-        withDueDateStarting: startOfDay, ending: endOfDay, calendars: calendars)
-    case "overdue":
-      predicate = eventStore.predicateForIncompleteReminders(
-        withDueDateStarting: nil, ending: Date(), calendars: calendars)
-    default:  // "incomplete"
-      predicate = eventStore.predicateForIncompleteReminders(
-        withDueDateStarting: nil, ending: nil, calendars: calendars)
-    }
-
-    var reminders = await fetchReminders(matching: predicate)
-
-    // Sort reminders
-    reminders.sort { reminder1, reminder2 in
-      // First by completion status
-      if reminder1.isCompleted != reminder2.isCompleted {
-        return !reminder1.isCompleted
-      }
-
-      // Then by due date
-      if let date1 = reminder1.dueDate,
-        let date2 = reminder2.dueDate {
-        return date1 < date2
-      }
-
-      // Reminders with due dates come before those without
-      if reminder1.dueDate != nil && reminder2.dueDate == nil {
-        return true
-      }
-
-      return false
-    }
-
-    var remindersDescription = Self.formatReminderQueryResults(reminders)
-
-    if remindersDescription.isEmpty {
-      remindersDescription = "No reminders found with filter '\(filter)'"
-    }
-
-    return GeneratedContent(properties: [
-      "status": "success",
-      "filter": filter,
-      "count": reminders.count,
-      "reminderIds": reminders.map(\.id),
-      "reminders": remindersDescription.trimmingCharacters(in: .whitespacesAndNewlines),
-      "message": "Found \(reminders.count) reminder(s)"
-    ])
-  }
-
-  private func fetchReminders(matching predicate: NSPredicate) async -> [ReminderSnapshot] {
-    await withCheckedContinuation { continuation in
-      eventStore.fetchReminders(matching: predicate) { fetchedReminders in
-        let snapshots = fetchedReminders?.map(ReminderSnapshot.init) ?? []
-        continuation.resume(returning: snapshots)
-      }
-    }
-  }
-
-  private func completeReminder(reminderId: String?) throws -> GeneratedContent {
-    guard let id = reminderId else {
-      return createErrorOutput(error: RemindersError.missingReminderId)
-    }
-
-    guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
-      return createErrorOutput(error: RemindersError.reminderNotFound)
-    }
-
-    reminder.isCompleted = true
-    reminder.completionDate = Date()
-
-    do {
-      try eventStore.save(reminder, commit: true)
-
-      return GeneratedContent(properties: [
-        "status": "success",
-        "message": "Reminder completed successfully",
-        "reminderId": reminder.calendarItemIdentifier,
-        "title": reminder.title ?? "",
-        "completedAt": formatDate(Date())
-      ])
-    } catch {
-      return createErrorOutput(error: error)
-    }
-  }
-
-  private func updateReminder(arguments: Arguments) throws -> GeneratedContent {
-    guard let reminderId = arguments.reminderId else {
-      return createErrorOutput(error: RemindersError.missingReminderId)
-    }
-
-    guard let reminder = eventStore.calendarItem(withIdentifier: reminderId) as? EKReminder else {
-      return createErrorOutput(error: RemindersError.reminderNotFound)
-    }
-
-    // Update fields if provided
-    if let title = arguments.title {
-      reminder.title = title
-    }
-
-    if let notes = arguments.notes {
-      reminder.notes = notes
-    }
-
-    if let dueDateString = arguments.dueDate {
-      if let dueDate = parseDate(dueDateString) {
-        reminder.dueDateComponents = Calendar.current.dateComponents(
-          [.year, .month, .day, .hour, .minute],
-          from: dueDate
+      return try await readTool.call(
+        arguments: RemindersReadTool.Arguments(filter: arguments.filter))
+    case "create", "complete", "update", "delete":
+      guard let mutationTool else {
+        throw ToolMutationExecutionError.confirmationRequired(
+          for: ToolMutationRequest(
+            toolName: "mutateReminders",
+            action: arguments.action.lowercased(),
+            summary: "Reminders mutation requested by deprecated RemindersTool",
+            resourceID: arguments.reminderId,
+            isDestructive: arguments.action.lowercased() == "delete"
+          )
         )
-      } else if dueDateString.lowercased() == "none" {
-        reminder.dueDateComponents = nil
       }
-    }
-
-    if let priorityString = arguments.priority {
-      switch priorityString.lowercased() {
-      case "high":
-        reminder.priority = 1
-      case "medium":
-        reminder.priority = 5
-      case "low":
-        reminder.priority = 9
-      default:
-        reminder.priority = 0
-      }
-    }
-
-    do {
-      try eventStore.save(reminder, commit: true)
-
-      return GeneratedContent(properties: [
-        "status": "success",
-        "message": "Reminder updated successfully",
-        "reminderId": reminder.calendarItemIdentifier,
-        "title": reminder.title ?? "",
-        "list": reminder.calendar?.title ?? "",
-        "dueDate": formatDateComponents(reminder.dueDateComponents),
-        "priority": Self.getPriorityString(reminder.priority)
-      ])
-    } catch {
-      return createErrorOutput(error: error)
+      return try await mutationTool.call(
+        arguments: RemindersMutationTool.Arguments(
+          action: arguments.action,
+          title: arguments.title,
+          notes: arguments.notes,
+          dueDate: arguments.dueDate,
+          priority: arguments.priority,
+          listName: arguments.listName,
+          reminderId: arguments.reminderId
+        )
+      )
+    default:
+      throw RemindersToolError.invalidAction
     }
   }
 
-  private func deleteReminder(reminderId: String?) throws -> GeneratedContent {
-    guard let id = reminderId else {
-      return createErrorOutput(error: RemindersError.missingReminderId)
-    }
+  static func formatReminderQueryResults(_ reminders: [ReminderRecord]) -> String {
+    RemindersReadTool.formatReminderQueryResults(reminders)
+  }
+}
 
-    guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
-      return createErrorOutput(error: RemindersError.reminderNotFound)
-    }
+public enum RemindersToolError: Error, LocalizedError, Sendable {
+  case accessDenied
+  case invalidAction
+  case invalidMutationAction
+  case invalidPriority
+  case invalidDueDate
+  case noChanges
+  case missingTitle
+  case missingReminderID
+  case reminderNotFound
 
-    let title = reminder.title ?? "Untitled"
-
-    do {
-      try eventStore.remove(reminder, commit: true)
-
-      return GeneratedContent(properties: [
-        "status": "success",
-        "message": "Reminder deleted successfully",
-        "deletedTitle": title
-      ])
-    } catch {
-      return createErrorOutput(error: error)
+  public var errorDescription: String? {
+    switch self {
+    case .accessDenied:
+      "Access to Reminders was denied. Grant permission in Settings."
+    case .invalidAction:
+      "Invalid action. Use 'create', 'query', 'complete', 'update', or 'delete'."
+    case .invalidMutationAction:
+      "Invalid mutation action. Use 'create', 'complete', 'update', or 'delete'."
+    case .invalidPriority:
+      "Invalid priority. Use 'none', 'low', 'medium', or 'high'."
+    case .invalidDueDate:
+      "Invalid due date. Use YYYY-MM-DD HH:mm:ss or an ISO 8601 date."
+    case .noChanges:
+      "At least one reminder field is required for an update."
+    case .missingTitle:
+      "Title is required to create a reminder."
+    case .missingReminderID:
+      "Reminder ID is required."
+    case .reminderNotFound:
+      "Reminder not found with the provided ID."
     }
   }
+}
 
-  private func parseDate(_ dateString: String) -> Date? {
+private enum RemindersToolDateFormatter {
+  static func optionalDate(from value: String?) throws -> Date? {
+    guard let value else { return nil }
+    if value.lowercased() == "none" {
+      return nil
+    }
+    guard let date = date(from: value) else {
+      throw RemindersToolError.invalidDueDate
+    }
+    return date
+  }
+
+  static func date(from value: String) -> Date? {
     let formatter = DateFormatter()
-    formatter.timeZone = TimeZone.current
+    formatter.timeZone = .current
 
-    // Try multiple date formats to be more flexible
-    let formats = [
-      "yyyy-MM-dd HH:mm:ss",  // Primary format: 2025-01-15 17:00:00
-      "yyyy-MM-dd HH:mm",  // Without seconds: 2025-01-15 17:00
-      "yyyy-MM-dd",  // Date only: 2025-01-15 (defaults to start of day)
-      "MM/dd/yyyy HH:mm:ss",  // US format: 01/15/2025 17:00:00
-      "MM/dd/yyyy HH:mm",  // US format without seconds: 01/15/2025 17:00
-      "MM/dd/yyyy"  // US date only: 01/15/2025
-    ]
-
-    for format in formats {
+    for format in [
+      "yyyy-MM-dd HH:mm:ss",
+      "yyyy-MM-dd HH:mm",
+      "yyyy-MM-dd",
+      "MM/dd/yyyy HH:mm:ss",
+      "MM/dd/yyyy HH:mm",
+      "MM/dd/yyyy"
+    ] {
       formatter.dateFormat = format
-      if let date = formatter.date(from: dateString) {
+      if let date = formatter.date(from: value) {
         return date
       }
     }
 
-    // If no format worked, try ISO 8601 formatter as fallback
     let isoFormatter = ISO8601DateFormatter()
-    isoFormatter.timeZone = TimeZone.current
-    return isoFormatter.date(from: dateString)
+    isoFormatter.timeZone = .current
+    return isoFormatter.date(from: value)
   }
 
-  private func formatDate(_ date: Date) -> String {
+  static func string(from date: Date?) -> String {
+    guard let date else { return "" }
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-    formatter.timeZone = TimeZone.current
+    formatter.timeZone = .current
     return formatter.string(from: date)
   }
-
-  private func formatDateComponents(_ components: DateComponents?) -> String {
-    guard let components = components,
-      let date = Calendar.current.date(from: components)
-    else {
-      return ""
-    }
-
-    let formatter = DateFormatter()
-    formatter.dateStyle = .medium
-    formatter.timeStyle = .short
-    return formatter.string(from: date)
-  }
-
-  private static func formatReminderDueDate(_ date: Date?) -> String {
-    guard let date else { return "" }
-
-    let formatter = DateFormatter()
-    formatter.dateStyle = .medium
-    formatter.timeStyle = .short
-    return formatter.string(from: date)
-  }
-
-  private static func getPriorityString(_ priority: Int) -> String {
-    switch priority {
-    case 1...3:
-      return "High"
-    case 4...6:
-      return "Medium"
-    case 7...9:
-      return "Low"
-    default:
-      return "None"
-    }
-  }
-
-  private func createErrorOutput(error: Error) -> GeneratedContent {
-    return GeneratedContent(properties: [
-      "status": "error",
-      "error": error.localizedDescription,
-      "message": "Failed to perform reminder operation"
-    ])
-  }
 }
 
-struct ReminderSnapshot: Sendable {
-  let id: String
-  let title: String
-  let listName: String
-  let dueDate: Date?
-  let priority: Int
-  let notes: String?
-  let isCompleted: Bool
-
-  init(reminder: EKReminder) {
-    self.id = reminder.calendarItemIdentifier
-    self.title = reminder.title ?? "Untitled"
-    self.listName = reminder.calendar?.title ?? "Unknown List"
-    self.dueDate = reminder.dueDateComponents?.date
-    self.priority = reminder.priority
-    self.notes = reminder.notes
-    self.isCompleted = reminder.isCompleted
-  }
-
-  init(
-    id: String,
-    title: String,
-    listName: String,
-    dueDate: Date? = nil,
-    priority: Int = 0,
-    notes: String? = nil,
-    isCompleted: Bool = false
-  ) {
-    self.id = id
-    self.title = title
-    self.listName = listName
-    self.dueDate = dueDate
-    self.priority = priority
-    self.notes = notes
-    self.isCompleted = isCompleted
-  }
-}
-
-extension RemindersTool {
-  static func formatReminderQueryResults(_ reminders: [ReminderSnapshot]) -> String {
-    var remindersDescription = ""
-
-    for (index, reminder) in reminders.enumerated() {
-      let completed = reminder.isCompleted ? "[x]" : "[ ]"
-      let priority = Self.getPriorityString(reminder.priority)
-      let dueDate = Self.formatReminderDueDate(reminder.dueDate)
-
-      remindersDescription += "\(index + 1). \(completed) \(reminder.title)\n"
-      remindersDescription += "   Reminder ID: \(reminder.id)\n"
-      remindersDescription += "   List: \(reminder.listName)\n"
-      if !dueDate.isEmpty {
-        remindersDescription += "   Due: \(dueDate)\n"
-      }
-      if priority != "None" {
-        remindersDescription += "   Priority: \(priority)\n"
-      }
-      if let notes = reminder.notes, !notes.isEmpty {
-        remindersDescription += "   Notes: \(notes.prefix(50))...\n"
-      }
-      remindersDescription += "\n"
-    }
-
-    return remindersDescription
-  }
-}
-
-enum RemindersError: Error, LocalizedError {
-  case accessDenied
-  case invalidAction
-  case missingTitle
-  case missingReminderId
-  case reminderNotFound
-
-  var errorDescription: String? {
-    switch self {
-    case .accessDenied:
-      return "Access to reminders denied. Please grant permission in Settings."
-    case .invalidAction:
-      return "Invalid action. Use 'create', 'query', 'complete', 'update', or 'delete'."
-    case .missingTitle:
-      return "Title is required to create a reminder."
-    case .missingReminderId:
-      return "Reminder ID is required."
-    case .reminderNotFound:
-      return "Reminder not found with the provided ID."
-    }
-  }
-}
+typealias ReminderSnapshot = ReminderRecord
+typealias RemindersError = RemindersToolError
