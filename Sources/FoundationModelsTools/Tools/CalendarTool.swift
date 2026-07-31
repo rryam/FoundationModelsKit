@@ -1,78 +1,444 @@
-//
-//  CalendarTool.swift
-//  FoundationLab
-//
-//  Created by Rudrank Riyam on 6/17/25.
-//
-
-@preconcurrency import EventKit
 import Foundation
 import FoundationModels
 import FoundationModelsKit
 
-/// A tool for managing calendar events using EventKit.
-///
-/// Use `CalendarTool` to create, read, query, and update calendar events.
-/// It integrates with the system Calendar app and requires appropriate permissions.
-///
-/// The following actions are supported:
-/// - `create`: Create a new calendar event
-/// - `query`: Query upcoming events within a date range
-/// - `read`: Read details of a specific event by ID
-/// - `update`: Update an existing event
-///
-/// ```swift
-/// let session = LanguageModelSession(tools: [CalendarTool()])
-/// let response = try await session.respond(to: "Create a meeting tomorrow at 2pm")
-/// ```
-///
-/// - Important: Requires Calendar entitlement, `NSCalendarsUsageDescription` in Info.plist,
-///   and user permission at runtime.
-public struct CalendarTool: Tool {
+/// Read-only Calendar access. This tool cannot create or update events.
+public struct CalendarReadTool: Tool {
+  public let name = "readCalendar"
+  public let description = "Query calendar events or read one event by identifier"
 
-  /// The name of the tool, used for identification.
-  public let name = "manageCalendar"
-  /// A brief description of the tool's functionality.
-  public let description = "Create, read, and query calendar events"
-
-  /// Arguments for calendar operations.
   @Generable
   public struct Arguments: RuntimeCompatibleGenerable {
-    /// The action to perform: "create", "query", "read", "update"
-    @Guide(description: "The action to perform: 'create', 'query', 'read', 'update'")
+    @Guide(description: "The read action to perform: 'query' or 'read'")
     public var action: String
 
-    /// Event title for creating or updating
+    @Guide(description: "Number of upcoming days to query")
+    public var daysAhead: Int?
+
+    @Guide(description: "Event identifier for the read action")
+    public var eventId: String?
+
+    public init(
+      action: String = "",
+      daysAhead: Int? = nil,
+      eventId: String? = nil
+    ) {
+      self.action = action
+      self.daysAhead = daysAhead
+      self.eventId = eventId
+    }
+  }
+
+  private let service: any CalendarReading
+  private let now: @Sendable () -> Date
+
+  public init(
+    service: any CalendarReading,
+    now: @escaping @Sendable () -> Date = Date.init
+  ) {
+    self.service = service
+    self.now = now
+  }
+
+  public func call(arguments: Arguments) async throws -> GeneratedContent {
+    let authorized: Bool
+    do {
+      authorized = try await service.requestCalendarReadAccess()
+    } catch {
+      throw CalendarToolError.accessDenied
+    }
+    guard authorized else {
+      throw CalendarToolError.accessDenied
+    }
+
+    switch arguments.action.lowercased() {
+    case "query":
+      return try await query(daysAhead: arguments.daysAhead ?? 7)
+    case "read":
+      return try await read(eventID: arguments.eventId)
+    default:
+      throw CalendarToolError.invalidReadAction
+    }
+  }
+
+  private func query(daysAhead: Int) async throws -> GeneratedContent {
+    let startDate = now()
+    guard let endDate = Calendar.current.date(byAdding: .day, value: daysAhead, to: startDate)
+    else {
+      throw CalendarToolError.invalidEndDate
+    }
+
+    let events = try await service.calendarEvents(from: startDate, to: endDate)
+    let description = Self.formatEventQueryResults(events)
+
+    return GeneratedContent(properties: [
+      "status": "success",
+      "count": events.count,
+      "daysQueried": daysAhead,
+      "eventIds": events.map(\.id),
+      "events": description.isEmpty
+        ? "No events found in the next \(daysAhead) days"
+        : description.trimmingCharacters(in: .whitespacesAndNewlines),
+      "message": "Found \(events.count) event(s) in the next \(daysAhead) days"
+    ])
+  }
+
+  private func read(eventID: String?) async throws -> GeneratedContent {
+    guard let eventID, !eventID.isEmpty else {
+      throw CalendarToolError.missingEventID
+    }
+    guard let event = try await service.calendarEvent(id: eventID) else {
+      throw CalendarToolError.eventNotFound
+    }
+
+    let dateFormatter = DateFormatter()
+    dateFormatter.dateStyle = .full
+    dateFormatter.timeStyle = .short
+
+    return GeneratedContent(properties: [
+      "status": "success",
+      "eventId": event.id,
+      "title": event.title,
+      "startDate": CalendarToolDateFormatter.string(from: event.startDate),
+      "endDate": CalendarToolDateFormatter.string(from: event.endDate),
+      "location": event.location ?? "",
+      "notes": event.notes ?? "",
+      "calendar": event.calendarTitle,
+      "isAllDay": event.isAllDay,
+      "url": event.url?.absoluteString ?? "",
+      "hasAlarms": event.hasAlarms,
+      "formattedDate":
+        "\(dateFormatter.string(from: event.startDate)) - \(dateFormatter.string(from: event.endDate))"
+    ])
+  }
+
+  static func formatEventQueryResults(_ events: [CalendarEventRecord]) -> String {
+    events.enumerated().map { index, event in
+      let dateFormatter = DateFormatter()
+      dateFormatter.dateStyle = .medium
+      dateFormatter.timeStyle = .short
+
+      var lines = [
+        "\(index + 1). \(event.title)",
+        "   Event ID: \(event.id)",
+        "   When: \(dateFormatter.string(from: event.startDate)) - "
+          + dateFormatter.string(from: event.endDate),
+        "   Calendar: \(event.calendarTitle)"
+          + (event.location.map { " at \($0)" } ?? "")
+      ]
+      if let notes = event.notes, !notes.isEmpty {
+        lines.append("   Notes: \(notes.prefix(50))...")
+      }
+      return lines.joined(separator: "\n")
+    }.joined(separator: "\n\n")
+  }
+}
+
+/// Calendar mutations guarded by an app-owned confirmation provider.
+public struct CalendarMutationTool: Tool {
+  public let name = "mutateCalendar"
+  public let description = "Create or update a calendar event after host-app confirmation"
+
+  @Generable
+  public struct Arguments: RuntimeCompatibleGenerable {
+    @Guide(description: "The mutation action to perform: 'create' or 'update'")
+    public var action: String
+
     @Guide(description: "Event title for creating or updating")
     public var title: String?
 
-    /// Start date in ISO format (YYYY-MM-DD HH:mm:ss)
-    @Guide(description: "Start date in ISO format (YYYY-MM-DD HH:mm:ss)")
+    @Guide(description: "Start date in format YYYY-MM-DD HH:mm:ss")
     public var startDate: String?
 
-    /// End date in ISO format (YYYY-MM-DD HH:mm:ss)
-    @Guide(description: "End date in ISO format (YYYY-MM-DD HH:mm:ss)")
+    @Guide(description: "End date in format YYYY-MM-DD HH:mm:ss")
     public var endDate: String?
 
-    /// Location for the event
-    @Guide(description: "Location for the event")
+    @Guide(description: "Event location")
     public var location: String?
 
-    /// Notes for the event
-    @Guide(description: "Notes for the event")
+    @Guide(description: "Event notes")
     public var notes: String?
 
-    /// Calendar name to use (defaults to default calendar)
-    @Guide(description: "Calendar name to use (defaults to default calendar)")
+    @Guide(description: "Calendar name; the default calendar is used when omitted")
     public var calendarName: String?
 
-    /// Number of days to query (for query action)
-    @Guide(description: "Number of days to query (for query action)")
-    public var daysAhead: Int?
-
-    /// Event identifier for reading or updating specific event
-    @Guide(description: "Event identifier for reading or updating specific event")
+    @Guide(description: "Event identifier for the update action")
     public var eventId: String?
+
+    public init(
+      action: String = "",
+      title: String? = nil,
+      startDate: String? = nil,
+      endDate: String? = nil,
+      location: String? = nil,
+      notes: String? = nil,
+      calendarName: String? = nil,
+      eventId: String? = nil
+    ) {
+      self.action = action
+      self.title = title
+      self.startDate = startDate
+      self.endDate = endDate
+      self.location = location
+      self.notes = notes
+      self.calendarName = calendarName
+      self.eventId = eventId
+    }
+  }
+
+  private enum PreparedMutation: Sendable {
+    case create(CalendarEventDraft)
+    case update(id: String, changes: CalendarEventChanges)
+  }
+
+  private let service: any CalendarMutating
+  private let executor: ToolMutationExecutor
+
+  public init(
+    service: any CalendarMutating,
+    confirmation: any ToolMutationConfirming
+  ) {
+    self.service = service
+    self.executor = ToolMutationExecutor(confirmer: confirmation)
+  }
+
+  init(service: any CalendarMutating, executor: ToolMutationExecutor) {
+    self.service = service
+    self.executor = executor
+  }
+
+  public func execute(
+    arguments: Arguments
+  ) async throws -> ToolMutationExecution<CalendarEventRecord> {
+    let prepared = try prepare(arguments)
+    let request = mutationRequest(for: prepared)
+    let service = service
+
+    return try await executor.execute(
+      request,
+      resourceID: { $0.id },
+      operation: {
+        let authorized: Bool
+        do {
+          authorized = try await service.requestCalendarMutationAccess()
+        } catch {
+          throw ToolMutationOperationError(
+            failureDescription: error.localizedDescription,
+            commitState: .notAttempted
+          )
+        }
+
+        guard authorized else {
+          throw ToolMutationOperationError(
+            failureDescription: CalendarToolError.accessDenied.localizedDescription,
+            commitState: .notAttempted
+          )
+        }
+
+        do {
+          switch prepared {
+          case .create(let draft):
+            return try await service.createCalendarEvent(draft)
+          case .update(let id, let changes):
+            guard let event = try await service.updateCalendarEvent(id: id, changes: changes) else {
+              throw ToolMutationOperationError(
+                failureDescription: CalendarToolError.eventNotFound.localizedDescription,
+                commitState: .notAttempted
+              )
+            }
+            return event
+          }
+        } catch let error as ToolMutationOperationError {
+          throw error
+        } catch {
+          throw ToolMutationOperationError(
+            failureDescription: error.localizedDescription,
+            commitState: .unknown
+          )
+        }
+      }
+    )
+  }
+
+  public func call(arguments: Arguments) async throws -> GeneratedContent {
+    let execution = try await execute(arguments: arguments)
+    let event = execution.value
+    let action = execution.receipt.request.action
+
+    return GeneratedContent(properties: [
+      "status": "success",
+      "message": action == "create" ? "Event created successfully" : "Event updated successfully",
+      "receiptId": execution.receipt.request.id.uuidString,
+      "receiptStatus": execution.receipt.status.rawValue,
+      "commitState": execution.receipt.commitState.rawValue,
+      "eventId": event.id,
+      "title": event.title,
+      "startDate": CalendarToolDateFormatter.string(from: event.startDate),
+      "endDate": CalendarToolDateFormatter.string(from: event.endDate),
+      "location": event.location ?? "",
+      "calendar": event.calendarTitle
+    ])
+  }
+
+  private func prepare(_ arguments: Arguments) throws -> PreparedMutation {
+    switch arguments.action.lowercased() {
+    case "create":
+      guard let title = arguments.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !title.isEmpty
+      else {
+        throw CalendarToolError.missingTitle
+      }
+      guard let startDateText = arguments.startDate,
+        let startDate = CalendarToolDateFormatter.date(from: startDateText)
+      else {
+        throw CalendarToolError.invalidStartDate
+      }
+
+      let endDate: Date
+      if let endDateText = arguments.endDate {
+        guard let parsed = CalendarToolDateFormatter.date(from: endDateText) else {
+          throw CalendarToolError.invalidEndDate
+        }
+        endDate = parsed
+      } else {
+        endDate = startDate.addingTimeInterval(3_600)
+      }
+      guard endDate >= startDate else {
+        throw CalendarToolError.endBeforeStart
+      }
+
+      return .create(
+        CalendarEventDraft(
+          title: title,
+          startDate: startDate,
+          endDate: endDate,
+          location: arguments.location,
+          notes: arguments.notes,
+          calendarName: arguments.calendarName
+        )
+      )
+    case "update":
+      guard let eventID = arguments.eventId, !eventID.isEmpty else {
+        throw CalendarToolError.missingEventID
+      }
+      guard
+        arguments.title != nil || arguments.startDate != nil || arguments.endDate != nil
+          || arguments.location != nil || arguments.notes != nil
+      else {
+        throw CalendarToolError.noChanges
+      }
+      let startDate = try parseOptional(arguments.startDate, error: .invalidStartDate)
+      let endDate = try parseOptional(arguments.endDate, error: .invalidEndDate)
+      if let startDate, let endDate, endDate < startDate {
+        throw CalendarToolError.endBeforeStart
+      }
+      return .update(
+        id: eventID,
+        changes: CalendarEventChanges(
+          title: arguments.title,
+          startDate: startDate,
+          endDate: endDate,
+          location: arguments.location,
+          notes: arguments.notes
+        )
+      )
+    default:
+      throw CalendarToolError.invalidMutationAction
+    }
+  }
+
+  private func parseOptional(
+    _ value: String?,
+    error: CalendarToolError
+  ) throws -> Date? {
+    guard let value else { return nil }
+    guard let date = CalendarToolDateFormatter.date(from: value) else {
+      throw error
+    }
+    return date
+  }
+
+  private func mutationRequest(for mutation: PreparedMutation) -> ToolMutationRequest {
+    switch mutation {
+    case .create(let draft):
+      ToolMutationRequest(
+        toolName: name,
+        action: "create",
+        summary: "Create calendar event '\(draft.title)' from "
+          + "\(CalendarToolDateFormatter.string(from: draft.startDate)) to "
+          + CalendarToolDateFormatter.string(from: draft.endDate),
+        details: mutationDetails(for: draft)
+      )
+    case .update(let id, let changes):
+      ToolMutationRequest(
+        toolName: name,
+        action: "update",
+        summary: "Update calendar event '\(changes.title ?? id)'",
+        details: mutationDetails(for: changes),
+        resourceID: id
+      )
+    }
+  }
+
+  private func mutationDetails(for draft: CalendarEventDraft) -> [ToolMutationDetail] {
+    [
+      ToolMutationDetail(label: "Title", value: draft.title),
+      ToolMutationDetail(
+        label: "Start",
+        value: CalendarToolDateFormatter.string(from: draft.startDate)
+      ),
+      ToolMutationDetail(
+        label: "End",
+        value: CalendarToolDateFormatter.string(from: draft.endDate)
+      ),
+      optionalDetail(label: "Location", value: draft.location),
+      optionalDetail(label: "Notes", value: draft.notes),
+      optionalDetail(label: "Calendar", value: draft.calendarName)
+    ].compactMap { $0 }
+  }
+
+  private func mutationDetails(for changes: CalendarEventChanges) -> [ToolMutationDetail] {
+    [
+      optionalDetail(label: "Title", value: changes.title),
+      changes.startDate.map {
+        ToolMutationDetail(label: "Start", value: CalendarToolDateFormatter.string(from: $0))
+      },
+      changes.endDate.map {
+        ToolMutationDetail(label: "End", value: CalendarToolDateFormatter.string(from: $0))
+      },
+      optionalDetail(label: "Location", value: changes.location),
+      optionalDetail(label: "Notes", value: changes.notes)
+    ].compactMap { $0 }
+  }
+
+  private func optionalDetail(label: String, value: String?) -> ToolMutationDetail? {
+    value.map { ToolMutationDetail(label: label, value: $0) }
+  }
+}
+
+/// Backward-compatible combined Calendar tool. New code should register split read and mutation tools.
+@available(
+  *,
+  deprecated,
+  message:
+    "Use CalendarReadTool and CalendarMutationTool so mutations require explicit confirmation."
+)
+public struct CalendarTool: Tool {
+  public let name = "manageCalendar"
+  public let description = "Read calendar events; mutations require host-app confirmation"
+
+  @Generable
+  public struct Arguments: RuntimeCompatibleGenerable {
+    @Guide(description: "The action: 'create', 'query', 'read', or 'update'")
+    public var action: String
+    @Guide(description: "Event title") public var title: String?
+    @Guide(description: "Start date in format YYYY-MM-DD HH:mm:ss") public var startDate: String?
+    @Guide(description: "End date in format YYYY-MM-DD HH:mm:ss") public var endDate: String?
+    @Guide(description: "Event location") public var location: String?
+    @Guide(description: "Event notes") public var notes: String?
+    @Guide(description: "Calendar name") public var calendarName: String?
+    @Guide(description: "Number of upcoming days to query") public var daysAhead: Int?
+    @Guide(description: "Event identifier") public var eventId: String?
 
     public init(
       action: String = "",
@@ -97,334 +463,135 @@ public struct CalendarTool: Tool {
     }
   }
 
-  nonisolated(unsafe) private let eventStore = EKEventStore()
+  private let readTool: CalendarReadTool
+  private let mutationTool: CalendarMutationTool?
 
-  public init() {}
+  public init() {
+    let service = EventKitCalendarService()
+    self.readTool = CalendarReadTool(service: service)
+    self.mutationTool = nil
+  }
+
+  public init(
+    readService: any CalendarReading,
+    mutationService: any CalendarMutating,
+    confirmation: any ToolMutationConfirming
+  ) {
+    self.readTool = CalendarReadTool(service: readService)
+    self.mutationTool = CalendarMutationTool(
+      service: mutationService,
+      confirmation: confirmation
+    )
+  }
+
+  public init(confirmation: any ToolMutationConfirming) {
+    let service = EventKitCalendarService()
+    self.init(
+      readService: service,
+      mutationService: service,
+      confirmation: confirmation
+    )
+  }
 
   public func call(arguments: Arguments) async throws -> some PromptRepresentable {
-    // Request access if needed
-    let authorized = await requestAccess()
-    guard authorized else {
-      return createErrorOutput(error: CalendarError.accessDenied)
-    }
-
     switch arguments.action.lowercased() {
-    case "create":
-      return try createEvent(arguments: arguments)
-    case "query":
-      return try queryEvents(arguments: arguments)
-    case "read":
-      return try readEvent(eventId: arguments.eventId)
-    case "update":
-      return try updateEvent(arguments: arguments)
+    case "query", "read":
+      return try await readTool.call(
+        arguments: CalendarReadTool.Arguments(
+          action: arguments.action,
+          daysAhead: arguments.daysAhead,
+          eventId: arguments.eventId
+        )
+      )
+    case "create", "update":
+      guard let mutationTool else {
+        throw ToolMutationExecutionError.confirmationRequired(
+          for: ToolMutationRequest(
+            toolName: "mutateCalendar",
+            action: arguments.action.lowercased(),
+            summary: "Calendar mutation requested by deprecated CalendarTool",
+            resourceID: arguments.eventId
+          )
+        )
+      }
+      return try await mutationTool.call(
+        arguments: CalendarMutationTool.Arguments(
+          action: arguments.action,
+          title: arguments.title,
+          startDate: arguments.startDate,
+          endDate: arguments.endDate,
+          location: arguments.location,
+          notes: arguments.notes,
+          calendarName: arguments.calendarName,
+          eventId: arguments.eventId
+        )
+      )
     default:
-      return createErrorOutput(error: CalendarError.invalidAction)
+      throw CalendarToolError.invalidAction
     }
   }
 
-  private func requestAccess() async -> Bool {
-    do {
-      if #available(macOS 14.0, iOS 17.0, *) {
-        return try await eventStore.requestFullAccessToEvents()
-      } else {
-        return try await eventStore.requestAccess(to: .event)
-      }
-    } catch {
-      return false
-    }
-  }
-
-  private func createEvent(arguments: Arguments) throws -> GeneratedContent {
-    guard let title = arguments.title, !title.isEmpty else {
-      return createErrorOutput(error: CalendarError.missingTitle)
-    }
-
-    guard let startDateString = arguments.startDate,
-      let startDate = parseDate(startDateString)
-    else {
-      return createErrorOutput(error: CalendarError.invalidStartDate)
-    }
-
-    let endDate: Date
-    if let endDateString = arguments.endDate {
-      guard let parsedEndDate = parseDate(endDateString) else {
-        return createErrorOutput(error: CalendarError.invalidEndDate)
-      }
-      endDate = parsedEndDate
-    } else {
-      // Default to 1 hour duration
-      endDate = startDate.addingTimeInterval(3600)
-    }
-
-    let event = EKEvent(eventStore: eventStore)
-    event.title = title
-    event.startDate = startDate
-    event.endDate = endDate
-
-    if let location = arguments.location {
-      event.location = location
-    }
-
-    if let notes = arguments.notes {
-      event.notes = notes
-    }
-
-    // Set calendar
-    if let calendarName = arguments.calendarName {
-      let calendars = eventStore.calendars(for: .event)
-      if let calendar = calendars.first(where: { $0.title == calendarName }) {
-        event.calendar = calendar
-      } else {
-        event.calendar = eventStore.defaultCalendarForNewEvents
-      }
-    } else {
-      event.calendar = eventStore.defaultCalendarForNewEvents
-    }
-
-    do {
-      try eventStore.save(event, span: .thisEvent)
-
-      return GeneratedContent(properties: [
-        "status": "success",
-        "message": "Event created successfully",
-        "eventId": event.eventIdentifier ?? "",
-        "title": event.title ?? "",
-        "startDate": formatDate(event.startDate),
-        "endDate": formatDate(event.endDate),
-        "location": event.location ?? "",
-        "calendar": event.calendar?.title ?? ""
-      ])
-    } catch {
-      return createErrorOutput(error: error)
-    }
-  }
-
-  private func queryEvents(arguments: Arguments) throws -> GeneratedContent {
-    let startDate = Date()
-    let daysToQuery = arguments.daysAhead ?? 7
-    guard let endDate = Calendar.current.date(byAdding: .day, value: daysToQuery, to: startDate) else {
-      return createErrorOutput(error: CalendarError.invalidEndDate)
-    }
-
-    let calendars = eventStore.calendars(for: .event)
-
-    let predicate = eventStore.predicateForEvents(
-      withStart: startDate,
-      end: endDate,
-      calendars: calendars
-    )
-
-    let events = eventStore.events(matching: predicate)
-
-    let eventSummaries = events.map(CalendarEventSummary.init)
-    var eventsDescription = Self.formatEventQueryResults(eventSummaries)
-
-    if eventsDescription.isEmpty {
-      eventsDescription = "No events found in the next \(daysToQuery) days"
-    }
-
-    return GeneratedContent(properties: [
-      "status": "success",
-      "count": events.count,
-      "daysQueried": daysToQuery,
-      "eventIds": eventSummaries.map(\.id),
-      "events": eventsDescription.trimmingCharacters(in: .whitespacesAndNewlines),
-      "message": "Found \(events.count) event(s) in the next \(daysToQuery) days"
-    ])
-  }
-
-  private func readEvent(eventId: String?) throws -> GeneratedContent {
-    guard let id = eventId else {
-      return createErrorOutput(error: CalendarError.missingEventId)
-    }
-
-    guard let event = eventStore.event(withIdentifier: id) else {
-      return createErrorOutput(error: CalendarError.eventNotFound)
-    }
-
-    let dateFormatter = DateFormatter()
-    dateFormatter.dateStyle = .full
-    dateFormatter.timeStyle = .short
-
-    return GeneratedContent(properties: [
-      "status": "success",
-      "eventId": event.eventIdentifier ?? "",
-      "title": event.title ?? "",
-      "startDate": formatDate(event.startDate),
-      "endDate": formatDate(event.endDate),
-      "location": event.location ?? "",
-      "notes": event.notes ?? "",
-      "calendar": event.calendar?.title ?? "",
-      "isAllDay": event.isAllDay,
-      "url": event.url?.absoluteString ?? "",
-      "hasAlarms": !(event.alarms?.isEmpty ?? true),
-      "formattedDate":
-        "\(dateFormatter.string(from: event.startDate)) - \(dateFormatter.string(from: event.endDate))"
-    ])
-  }
-
-  private func updateEvent(arguments: Arguments) throws -> GeneratedContent {
-    guard let eventId = arguments.eventId else {
-      return createErrorOutput(error: CalendarError.missingEventId)
-    }
-
-    guard let event = eventStore.event(withIdentifier: eventId) else {
-      return createErrorOutput(error: CalendarError.eventNotFound)
-    }
-
-    // Update fields if provided
-    if let title = arguments.title {
-      event.title = title
-    }
-
-    if let startDateString = arguments.startDate,
-      let startDate = parseDate(startDateString) {
-      event.startDate = startDate
-    }
-
-    if let endDateString = arguments.endDate,
-      let endDate = parseDate(endDateString) {
-      event.endDate = endDate
-    }
-
-    if let location = arguments.location {
-      event.location = location
-    }
-
-    if let notes = arguments.notes {
-      event.notes = notes
-    }
-
-    do {
-      try eventStore.save(event, span: .thisEvent)
-
-      return GeneratedContent(properties: [
-        "status": "success",
-        "message": "Event updated successfully",
-        "eventId": event.eventIdentifier ?? "",
-        "title": event.title ?? "",
-        "startDate": formatDate(event.startDate),
-        "endDate": formatDate(event.endDate),
-        "location": event.location ?? "",
-        "calendar": event.calendar?.title ?? ""
-      ])
-    } catch {
-      return createErrorOutput(error: error)
-    }
-  }
-
-  private func parseDate(_ dateString: String) -> Date? {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-    formatter.timeZone = TimeZone.current
-    return formatter.date(from: dateString)
-  }
-
-  private func formatDate(_ date: Date) -> String {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-    formatter.timeZone = TimeZone.current
-    return formatter.string(from: date)
-  }
-
-  private func createErrorOutput(error: Error) -> GeneratedContent {
-    return GeneratedContent(properties: [
-      "status": "error",
-      "error": error.localizedDescription,
-      "message": "Failed to perform calendar operation"
-    ])
+  static func formatEventQueryResults(_ events: [CalendarEventRecord]) -> String {
+    CalendarReadTool.formatEventQueryResults(events)
   }
 }
 
-struct CalendarEventSummary: Sendable {
-  let id: String
-  let title: String
-  let startDate: Date
-  let endDate: Date
-  let location: String?
-  let calendarTitle: String
-  let notes: String?
-
-  init(
-    id: String,
-    title: String,
-    startDate: Date,
-    endDate: Date,
-    location: String? = nil,
-    calendarTitle: String,
-    notes: String? = nil
-  ) {
-    self.id = id
-    self.title = title
-    self.startDate = startDate
-    self.endDate = endDate
-    self.location = location
-    self.calendarTitle = calendarTitle
-    self.notes = notes
-  }
-
-  init(event: EKEvent) {
-    self.id = event.eventIdentifier ?? ""
-    self.title = event.title ?? "Untitled"
-    self.startDate = event.startDate
-    self.endDate = event.endDate
-    self.location = event.location
-    self.calendarTitle = event.calendar?.title ?? "Unknown Calendar"
-    self.notes = event.notes
-  }
-}
-
-extension CalendarTool {
-  static func formatEventQueryResults(_ events: [CalendarEventSummary]) -> String {
-    var eventsDescription = ""
-
-    for (index, event) in events.enumerated() {
-      let dateFormatter = DateFormatter()
-      dateFormatter.dateStyle = .medium
-      dateFormatter.timeStyle = .short
-
-      let location = event.location != nil ? " at \(event.location!)" : ""
-
-      eventsDescription += "\(index + 1). \(event.title)\n"
-      eventsDescription += "   Event ID: \(event.id)\n"
-      eventsDescription +=
-        "   When: \(dateFormatter.string(from: event.startDate)) - \(dateFormatter.string(from: event.endDate))\n"
-      eventsDescription += "   Calendar: \(event.calendarTitle)\(location)\n"
-      if let notes = event.notes, !notes.isEmpty {
-        eventsDescription += "   Notes: \(notes.prefix(50))...\n"
-      }
-      eventsDescription += "\n"
-    }
-
-    return eventsDescription
-  }
-}
-
-enum CalendarError: Error, LocalizedError {
+public enum CalendarToolError: Error, LocalizedError, Sendable {
   case accessDenied
   case invalidAction
+  case invalidReadAction
+  case invalidMutationAction
   case missingTitle
   case invalidStartDate
   case invalidEndDate
-  case missingEventId
+  case endBeforeStart
+  case noChanges
+  case missingEventID
   case eventNotFound
 
-  var errorDescription: String? {
+  public var errorDescription: String? {
     switch self {
     case .accessDenied:
-      return "Access to calendar denied. Please grant permission in Settings."
+      "Access to Calendar was denied. Grant permission in Settings."
     case .invalidAction:
-      return "Invalid action. Use 'create', 'query', 'read', or 'update'."
+      "Invalid action. Use 'create', 'query', 'read', or 'update'."
+    case .invalidReadAction:
+      "Invalid read action. Use 'query' or 'read'."
+    case .invalidMutationAction:
+      "Invalid mutation action. Use 'create' or 'update'."
     case .missingTitle:
-      return "Title is required to create an event."
+      "Title is required to create an event."
     case .invalidStartDate:
-      return "Invalid start date format. Use YYYY-MM-DD HH:mm:ss"
+      "Invalid start date format. Use YYYY-MM-DD HH:mm:ss."
     case .invalidEndDate:
-      return "Invalid end date format. Use YYYY-MM-DD HH:mm:ss"
-    case .missingEventId:
-      return "Event ID is required."
+      "Invalid end date format. Use YYYY-MM-DD HH:mm:ss."
+    case .endBeforeStart:
+      "The event end date cannot be earlier than its start date."
+    case .noChanges:
+      "At least one event field is required for an update."
+    case .missingEventID:
+      "Event ID is required."
     case .eventNotFound:
-      return "Event not found with the provided ID."
+      "Event not found with the provided ID."
     }
   }
 }
+
+private enum CalendarToolDateFormatter {
+  static func date(from value: String) -> Date? {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    formatter.timeZone = .current
+    return formatter.date(from: value)
+  }
+
+  static func string(from date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    formatter.timeZone = .current
+    return formatter.string(from: date)
+  }
+}
+
+typealias CalendarEventSummary = CalendarEventRecord
+typealias CalendarError = CalendarToolError

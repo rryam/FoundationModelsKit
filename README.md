@@ -8,10 +8,11 @@ It is designed to complement Apple's Foundation Models framework and Apple's Fou
 
 ## Products
 
-The package exposes two products:
+The package exposes three products:
 
 - `FoundationModelsKit`: runtime inspection, capability use cases, model configuration, schemas, token accounting, transcript utilities, error projection, and conversation state.
 - `FoundationModelsTools`: `Tool` implementations for Apple platform capabilities and web services. This product re-exports `FoundationModelsKit`.
+- `FoundationModelsToolsTestSupport`: in-memory Calendar and Reminders services, scripted confirmation, and deterministic fixtures for downstream tests.
 
 ## What Is Included
 
@@ -189,17 +190,31 @@ do {
 
 ### Tools
 
-`FoundationModelsTools` provides tools for real app capabilities.
+`FoundationModelsTools` provides tools for real app capabilities. Calendar and Reminders reads are separate from mutations. Mutation tools cannot be initialized without an app-owned confirmation provider, and model-authored arguments never contain an approval flag.
 
 ```swift
 import FoundationModels
 import FoundationModelsTools
 
+let confirmation = ToolMutationConfirmationHandler { request in
+    // Present request.summary and request.details in app-owned UI.
+    let approved = await confirmationUI.confirm(request)
+    return approved
+        ? .approved()
+        : .denied(reason: "The user cancelled the change.")
+}
+
+// Share one long-lived EventKit store between each domain's read and mutation tools.
+let calendar = EventKitCalendarService()
+let reminders = EventKitRemindersService()
+
 let session = LanguageModelSession(
     tools: [
         WeatherTool(),
-        CalendarTool(),
-        RemindersTool()
+        CalendarReadTool(service: calendar),
+        RemindersReadTool(service: reminders),
+        CalendarMutationTool(service: calendar, confirmation: confirmation),
+        RemindersMutationTool(service: reminders, confirmation: confirmation)
     ]
 )
 
@@ -214,13 +229,30 @@ Available tools:
 - `WebTool`: Exa-backed web search
 - `WebMetadataTool`: page title, description, and image metadata
 - `ContactsTool`: search, read, and create contacts
-- `CalendarTool`: create, query, read, and update events
-- `RemindersTool`: create, query, update, complete, and delete reminders
+- `CalendarReadTool`: query and read events
+- `CalendarMutationTool`: create and update events after app-owned confirmation
+- `RemindersReadTool`: query reminders
+- `RemindersMutationTool`: create, update, complete, and delete reminders after app-owned confirmation
 - `LocationTool`: current location, geocoding, reverse geocoding, place search, and distance
 - `HealthTool`: authorized HealthKit reads
 - `MusicTool`: Apple Music search and playback controls
 
 The tools preserve platform permission boundaries. They do not fabricate unavailable Health, Contacts, Calendar, Location, Music, or Reminders data.
+
+### Mutation Safety
+
+Calendar and Reminders use four public boundaries:
+
+1. Read services (`CalendarReading` and `RemindersReading`) expose no write methods.
+2. Mutation services (`CalendarMutating` and `RemindersMutating`) are injected into mutation-only tools.
+3. `ToolMutationConfirming` belongs to the host app and reviews the exact `ToolMutationRequest` immediately before execution.
+4. Every executed mutation returns a typed `ToolMutationReceipt`, including the committed resource identifier. Failures throw `ToolMutationExecutionError` with the same receipt.
+
+Receipts distinguish `.notAttempted`, `.notCommitted`, `.committed`, and `.unknown`. An EventKit error after a save begins is intentionally `.unknown`; callers must not claim that a retry is safe when the system cannot prove whether the first write committed.
+
+The old `CalendarTool` and `RemindersTool` remain source-compatible for migration, but are deprecated. Their zero-argument initializers are read-capable and fail closed with a `.confirmationRequired` receipt for every mutation. Pass a confirmation provider explicitly, or migrate to the split tools.
+
+For tests, add the `FoundationModelsToolsTestSupport` product and inject `InMemoryCalendarService`, `InMemoryRemindersService`, and `ScriptedToolMutationConfirmer`. No Calendar or Reminders permission is needed for these fixtures.
 
 ## Requirements
 
@@ -239,7 +271,7 @@ Add the package dependency:
 dependencies: [
     .package(
         url: "https://github.com/rryam/FoundationModelsKit.git",
-        branch: "main"
+        from: "3.0.0"
     )
 ]
 ```
@@ -256,6 +288,20 @@ Use the core product, the tools product, or both:
         ),
         .product(
             name: "FoundationModelsTools",
+            package: "FoundationModelsKit"
+        )
+    ]
+)
+```
+
+Add `FoundationModelsToolsTestSupport` only to targets that need fixtures:
+
+```swift
+.testTarget(
+    name: "YourTargetTests",
+    dependencies: [
+        .product(
+            name: "FoundationModelsToolsTestSupport",
             package: "FoundationModelsKit"
         )
     ]

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import FoundationModelsTools
 
 @Suite("Tool Query Identifier Tests")
@@ -17,7 +18,7 @@ struct ToolQueryIdentifierTests {
       notes: "Bring the spec"
     )
 
-    let output = CalendarTool.formatEventQueryResults([event])
+    let output = CalendarReadTool.formatEventQueryResults([event])
 
     #expect(output.contains("Event ID: event-123"))
     #expect(output.contains("Design Review"))
@@ -29,10 +30,10 @@ struct ToolQueryIdentifierTests {
       id: "reminder-456",
       title: "Ship audit fix",
       listName: "Engineering",
-      priority: 1
+      priority: .high
     )
 
-    let output = RemindersTool.formatReminderQueryResults([reminder])
+    let output = RemindersReadTool.formatReminderQueryResults([reminder])
 
     #expect(output.contains("Reminder ID: reminder-456"))
     #expect(output.contains("Ship audit fix"))
