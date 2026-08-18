@@ -119,9 +119,6 @@ extension Transcript.Segment {
     #if compiler(>=6.4)
     case .attachment(let attachmentSegment):
       return estimateTokens(from: attachmentSegment.label ?? "image attachment") + 12
-
-    case .custom(let customSegment):
-      return estimateTokens(from: customSegment.description)
     #endif
 
     @unknown default:
