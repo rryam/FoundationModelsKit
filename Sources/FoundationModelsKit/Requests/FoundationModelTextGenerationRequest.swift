@@ -1,5 +1,9 @@
 import Foundation
-public struct FoundationModelTextGenerationRequest: FoundationModelCapabilityRequest, Sendable {
+public struct FoundationModelTextGenerationRequest:
+    FoundationModelCapabilityRequest,
+    Codable,
+    Hashable,
+    Sendable {
     public let prompt: String
     public let systemPrompt: String?
     public let modelUseCase: FoundationModelUseCase

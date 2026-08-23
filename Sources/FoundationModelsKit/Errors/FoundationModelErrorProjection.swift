@@ -50,6 +50,10 @@ public struct FoundationModelErrorProjection: Sendable, Hashable, Codable {
     }
 
     public static func project(_ error: any Error) -> Self? {
+        if let projectedError = error as? any FoundationModelProjectedError {
+            return projectedError.foundationModelErrorProjection
+        }
+
         if let generationError = error as? LanguageModelSession.GenerationError {
             return project(generationError)
         }

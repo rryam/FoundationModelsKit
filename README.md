@@ -230,6 +230,19 @@ Add `FoundationModelEvaluation` when an app or benchmark needs evidence that sur
 
 `FoundationModelEvaluationRunner` records ordered tool events, repair count, latency, token usage, schema validity, refusal or error category, and final success without collecting prompt or response text. `FoundationModelFeedbackBundleBuilder` can pair that trace with `LanguageModelSession.logFeedbackAttachment`; Apple's attachment may contain session content, so consent and redaction stay with the app.
 
+For deterministic tests, wrap any `FoundationModelTextGenerating` implementation in `FoundationModelRecordingTextGenerator`, export its `FoundationModelTextGenerationCassette`, then load that cassette with `FoundationModelReplayTextGenerator`. Replays match every semantic request field except the correlation ID and consume repeated recordings in their original request order.
+
+```swift
+let recorder = FoundationModelRecordingTextGenerator(base: liveGenerator)
+_ = try await recorder.generateText(for: request)
+let cassette = await recorder.cassette()
+
+let replay = try FoundationModelReplayTextGenerator(cassette: cassette)
+let deterministicResult = try await replay.generateText(for: request)
+```
+
+Cassettes contain complete prompts, instructions, adapter URLs, and responses. Creating or exporting one is an explicit app decision; the package doesn't redact or persist it automatically. `FoundationModelEvaluationSnapshot` removes run IDs, dates, and latency so checked-in golden comparisons report drift only in stable evaluation fields.
+
 ### Tools
 
 `FoundationModelsTools` provides tools for real app capabilities. Calendar and Reminders reads are separate from mutations. Mutation tools cannot be initialized without an app-owned confirmation provider, and model-authored arguments never contain an approval flag.
