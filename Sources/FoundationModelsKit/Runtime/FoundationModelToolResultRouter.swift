@@ -156,13 +156,13 @@ public actor FoundationModelToolResultRouter<Outcome: Sendable> {
     private func append(
         _ record: InvocationRecord
     ) throws -> FoundationModelToolInvocation<Outcome> {
-        let canonicalArguments = try record.arguments.canonicalJSONData()
+        let argumentEvidence = Self.argumentEvidence(for: record.arguments)
         let invocation = FoundationModelToolInvocation(
             sequence: recordedInvocations.count,
             identifier: record.identifier,
             toolName: record.toolName,
-            argumentFingerprint: Self.fingerprint(canonicalArguments),
-            arguments: argumentRecording == .includeArguments ? record.arguments : nil,
+            argumentFingerprint: Self.fingerprint(argumentEvidence.data),
+            arguments: argumentRecording == .includeArguments ? argumentEvidence.recordableValue : nil,
             status: record.status,
             outcome: record.outcome,
             failure: record.failure,
@@ -170,6 +170,39 @@ public actor FoundationModelToolResultRouter<Outcome: Sendable> {
         )
         recordedInvocations.append(invocation)
         return invocation
+    }
+
+    private static func argumentEvidence(
+        for arguments: FoundationModelToolValue
+    ) -> (data: Data, recordableValue: FoundationModelToolValue?) {
+        if let canonicalArguments = try? arguments.canonicalJSONData() {
+            return (canonicalArguments, arguments)
+        }
+
+        // A policy rejection can be caused by arguments that JSON cannot encode, such as NaN.
+        // Preserve a stable identity for diagnostics, but never retain the unencodable value.
+        let description = "non-json:\(nonJSONDescription(for: arguments))"
+        return (Data(description.utf8), nil)
+    }
+
+    private static func nonJSONDescription(for value: FoundationModelToolValue) -> String {
+        switch value {
+        case .object(let object):
+            let members = object.keys.sorted().map { key in
+                "\(key.utf8.count):\(key)=\(nonJSONDescription(for: object[key]!))"
+            }
+            return "object[\(members.joined(separator: ","))]"
+        case .array(let array):
+            return "array[\(array.map(nonJSONDescription).joined(separator: ","))]"
+        case .string(let string):
+            return "string:\(string.utf8.count):\(string)"
+        case .number(let number):
+            return "number:\(String(number.bitPattern, radix: 16))"
+        case .boolean(let boolean):
+            return "boolean:\(boolean)"
+        case .null:
+            return "null"
+        }
     }
 
     private static func fingerprint(_ data: Data) -> String {

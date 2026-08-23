@@ -93,6 +93,35 @@ struct FoundationModelToolResultRouterTests {
         #expect(await router.routingResult() == .none)
     }
 
+    @Test("Non-JSON policy rejections retain evidence without raw arguments")
+    func recordsNonJSONPolicyRejection() async throws {
+        let router = FoundationModelToolResultRouter<AppOutcome>(
+            argumentRecording: .includeArguments
+        )
+        let arguments = FoundationModelToolValue.object([
+            "value": .number(.nan)
+        ])
+        let policyResult = FoundationModelToolExecutionResult<Int>.invalidArguments([])
+
+        let invocation = try await router.record(
+            tool: "sleep",
+            arguments: arguments,
+            result: policyResult,
+            mapSuccess: { .exercise(minutes: $0) }
+        )
+        let repeated = try await router.record(
+            tool: "sleep",
+            arguments: arguments,
+            result: policyResult,
+            mapSuccess: { .exercise(minutes: $0) }
+        )
+
+        #expect(invocation.status == .invalidArguments)
+        #expect(invocation.arguments == nil)
+        #expect(invocation.argumentFingerprint == repeated.argumentFingerprint)
+        #expect(await router.snapshot().count == 2)
+    }
+
     @Test("Projected failures remain typed and Codable")
     func recordsAndRoundTripsFailure() async throws {
         let router = FoundationModelToolResultRouter<AppOutcome>()
