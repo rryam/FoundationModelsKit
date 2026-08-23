@@ -42,6 +42,23 @@ if pcc.isRunnableInCurrentProcess {
 }
 ```
 
+### Environment Diagnostics
+
+`FoundationModelEnvironmentDiagnostics` combines runtime availability with observable OS, build, simulator, locale, device, and boot-volume facts. It returns typed issues and recovery actions for known blockers such as a disabled Apple Intelligence setting, an ineligible device, missing PCC entitlement, external macOS boot volume, or mismatched SDK and Simulator versions.
+
+```swift
+let report = FoundationModelEnvironmentDiagnostics().report(for: .onDevice)
+
+if report.canAttemptRequest {
+    // The request result is still authoritative.
+    runGeneration()
+} else {
+    present(report.issues)
+}
+```
+
+The report states its blind spots. Public APIs don't expose tool-specific model asset readiness, the simulator host OS version, or reliable VM detection, so diagnostics never infer those states from general model availability.
+
 ### Generation Use Cases
 
 Wrap Foundation Models calls in request and result types that are easy to test, serialize, and record.
