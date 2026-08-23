@@ -115,7 +115,7 @@ public actor FoundationModelToolExecutionPolicy {
                 callFingerprint: callFingerprint
             )
             guard let confirmer, await confirmer.confirm(request, arguments: arguments) else {
-                seenCalls.remove(identity)
+                releasePendingConfirmation(identity, attempt: attempt)
                 return .confirmationRequired(request)
             }
         case .sideEffect(.idempotency(let key)):
@@ -181,6 +181,17 @@ public actor FoundationModelToolExecutionPolicy {
         }
 
         return .succeeded(output, usage: usage(), outputTokenCount: outputTokenCount)
+    }
+
+    private func releasePendingConfirmation(
+        _ identity: CallIdentity,
+        attempt: FoundationModelToolExecutionAttempt
+    ) {
+        seenCalls.remove(identity)
+        callCount -= 1
+        if attempt == .repair {
+            repairCount -= 1
+        }
     }
 
     private func admissionBudgetExceeded(

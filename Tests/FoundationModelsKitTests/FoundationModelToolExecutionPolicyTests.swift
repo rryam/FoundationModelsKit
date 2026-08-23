@@ -220,7 +220,9 @@ struct FoundationModelToolExecutionPolicyTests {
     func confirmationRetryExecutes() async throws {
         let confirmer = ApprovingConfirmer()
         let probe = ToolOperationProbe()
-        let policy = FoundationModelToolExecutionPolicy()
+        let policy = FoundationModelToolExecutionPolicy(
+            budget: FoundationModelToolExecutionBudget(maxCalls: 1, maxRepairs: 1)
+        )
         let schema = FoundationModelToolSchema(type: .object)
         let arguments = FoundationModelToolValue.object([:])
 
@@ -228,6 +230,7 @@ struct FoundationModelToolExecutionPolicyTests {
             tool: "delete",
             arguments: arguments,
             schema: schema,
+            attempt: .repair,
             effect: .sideEffect(.confirmation),
             operation: {
                 await probe.recordExecution()
@@ -243,6 +246,7 @@ struct FoundationModelToolExecutionPolicyTests {
             tool: "delete",
             arguments: arguments,
             schema: schema,
+            attempt: .repair,
             effect: .sideEffect(.confirmation),
             confirmer: confirmer,
             operation: {
@@ -251,11 +255,13 @@ struct FoundationModelToolExecutionPolicyTests {
             }
         )
 
-        guard case .succeeded(let output, _, _) = approved else {
+        guard case .succeeded(let output, let usage, _) = approved else {
             Issue.record("Expected the approved retry to execute")
             return
         }
         #expect(output)
+        #expect(usage.callCount == 1)
+        #expect(usage.repairCount == 1)
         #expect(await probe.executionCount == 1)
     }
 
