@@ -13,6 +13,9 @@ public actor FoundationModelDefaultsCircuitStore: FoundationModelCircuitStatePer
     private let defaults: UserDefaults
     private let keyPrefix: String
 
+    /// The standard durable store shared by default execution coordinators in this process.
+    public static let shared = FoundationModelDefaultsCircuitStore()
+
     public init(
         keyPrefix: String = "FoundationModelsKit.executionCircuit"
     ) {
@@ -29,6 +32,29 @@ public actor FoundationModelDefaultsCircuitStore: FoundationModelCircuitStatePer
         }
         self.defaults = defaults
         self.keyPrefix = keyPrefix
+    }
+
+    public func admission(
+        for runtime: FoundationModelRuntime,
+        at date: Date,
+        halfOpenProbeInterval: TimeInterval
+    ) -> FoundationModelCircuitAdmission {
+        guard let state = circuitState(for: runtime) else {
+            return .permitted(phase: nil, previousState: nil)
+        }
+        guard state.nextProbeAt <= date else {
+            return .rejected(state: state)
+        }
+
+        let halfOpenState = FoundationModelCircuitState(
+            phase: .halfOpen,
+            failureCategory: state.failureCategory,
+            openedAt: state.openedAt,
+            nextProbeAt: date.addingTimeInterval(halfOpenProbeInterval),
+            consecutiveFailures: state.consecutiveFailures
+        )
+        setCircuitState(halfOpenState, for: runtime)
+        return .permitted(phase: .halfOpen, previousState: state)
     }
 
     public func circuitState(for runtime: FoundationModelRuntime) -> FoundationModelCircuitState? {

@@ -47,6 +47,7 @@ struct FoundationModelExecutionCoordinatorTests {
         #expect(result.trace.attempts[0].outcome == .failed)
         #expect(result.trace.attempts[0].failure?.category == .rateLimited)
         #expect(result.trace.attempts[0].nextProbeAt == resetDate)
+        #expect(result.trace.attempts[0].cooldown == 1_000)
         #expect(result.trace.attempts[0].retryDecision == .useFallback(.onDevice))
         #expect(result.trace.attempts[1].outcome == .succeeded)
         #expect(await primaryProbe.values() == ["request"])
@@ -187,7 +188,8 @@ struct FoundationModelExecutionCoordinatorTests {
                 try await Task.sleep(for: .milliseconds(20))
                 await concurrencyProbe.end()
                 return request
-            }
+            },
+            circuitStateStore: FoundationModelInMemoryCircuitStateStore()
         )
 
         async let first = coordinator.execute(1, safety: .readOnlyOrIdempotent)
@@ -197,6 +199,81 @@ struct FoundationModelExecutionCoordinatorTests {
 
         #expect(Set(outputs) == [1, 2, 3])
         #expect(await concurrencyProbe.maximumConcurrentExecutions() == 1)
+    }
+
+    @Test("Separate coordinators serialize through one shared execution gate")
+    func separateCoordinatorsAreSerialized() async throws {
+        let concurrencyProbe = ConcurrencyProbe()
+        let gate = FoundationModelExecutionGate()
+        let store = FoundationModelInMemoryCircuitStateStore()
+        let firstCoordinator = try FoundationModelExecutionCoordinator<Int, Int>(
+            primary: FoundationModelExecutionRoute(runtime: .onDevice) { request in
+                await concurrencyProbe.begin()
+                try await Task.sleep(for: .milliseconds(20))
+                await concurrencyProbe.end()
+                return request
+            },
+            circuitStateStore: store,
+            executionGate: gate
+        )
+        let secondCoordinator = try FoundationModelExecutionCoordinator<Int, Int>(
+            primary: FoundationModelExecutionRoute(runtime: .onDevice) { request in
+                await concurrencyProbe.begin()
+                try await Task.sleep(for: .milliseconds(20))
+                await concurrencyProbe.end()
+                return request
+            },
+            circuitStateStore: store,
+            executionGate: gate
+        )
+
+        async let first = firstCoordinator.execute(1, safety: .readOnlyOrIdempotent)
+        async let second = secondCoordinator.execute(2, safety: .readOnlyOrIdempotent)
+        let outputs = try await [first.output, second.output]
+
+        #expect(Set(outputs) == [1, 2])
+        #expect(await concurrencyProbe.maximumConcurrentExecutions() == 1)
+    }
+
+    @Test("Circuit admission reserves only one half-open probe")
+    func halfOpenAdmissionIsAtomic() async throws {
+        let date = Date(timeIntervalSince1970: 1_000)
+        let store = FoundationModelInMemoryCircuitStateStore(states: [
+            .privateCloudCompute: FoundationModelCircuitState(
+                phase: .open,
+                failureCategory: .rateLimited,
+                openedAt: date.addingTimeInterval(-100),
+                nextProbeAt: date.addingTimeInterval(-1),
+                consecutiveFailures: 1
+            )
+        ])
+
+        async let first = store.admission(
+            for: .privateCloudCompute,
+            at: date,
+            halfOpenProbeInterval: 300
+        )
+        async let second = store.admission(
+            for: .privateCloudCompute,
+            at: date,
+            halfOpenProbeInterval: 300
+        )
+        let admissions = await [first, second]
+
+        let permittedCount = admissions.filter {
+            if case .permitted(phase: .halfOpen, previousState: _) = $0 {
+                return true
+            }
+            return false
+        }.count
+        let rejectedCount = admissions.filter {
+            if case .rejected = $0 {
+                return true
+            }
+            return false
+        }.count
+        #expect(permittedCount == 1)
+        #expect(rejectedCount == 1)
     }
 
     @Test("Durable circuit store round-trips and clears state")

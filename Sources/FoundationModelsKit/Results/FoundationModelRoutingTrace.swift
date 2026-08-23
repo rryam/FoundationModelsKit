@@ -32,6 +32,7 @@ public struct FoundationModelRoutingTrace: Sendable, Hashable, Codable {
         public let failure: FoundationModelErrorProjection?
         public let errorType: String?
         public let nextProbeAt: Date?
+        public let cooldown: TimeInterval?
         public let retryDecision: RetryDecision
 
         public init(
@@ -43,6 +44,7 @@ public struct FoundationModelRoutingTrace: Sendable, Hashable, Codable {
             failure: FoundationModelErrorProjection? = nil,
             errorType: String? = nil,
             nextProbeAt: Date? = nil,
+            cooldown: TimeInterval? = nil,
             retryDecision: RetryDecision
         ) {
             self.runtime = runtime
@@ -53,6 +55,7 @@ public struct FoundationModelRoutingTrace: Sendable, Hashable, Codable {
             self.failure = failure
             self.errorType = errorType
             self.nextProbeAt = nextProbeAt
+            self.cooldown = cooldown
             self.retryDecision = retryDecision
         }
     }

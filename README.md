@@ -8,11 +8,12 @@ It is designed to complement Apple's Foundation Models framework and Apple's Fou
 
 ## Products
 
-The package exposes three products:
+The package exposes four products:
 
 - `FoundationModelsKit`: runtime inspection, capability use cases, model configuration, schemas, token accounting, transcript utilities, error projection, and conversation state.
 - `FoundationModelsTools`: `Tool` implementations for Apple platform capabilities and web services. This product re-exports `FoundationModelsKit`.
 - `FoundationModelsToolsTestSupport`: in-memory Calendar and Reminders services, scripted confirmation, and deterministic fixtures for downstream tests.
+- `FoundationModelEvaluation`: runtime fingerprints, repeatable evaluation traces, and Feedback Assistant attachments. It depends on `FoundationModelsKit`.
 
 ## What Is Included
 
@@ -72,6 +73,14 @@ Available use cases include:
 - `FoundationModelRuntimeInspectionUseCase`
 - `FoundationModelQuotaUsageInspectionUseCase`
 - `FoundationModelSupportedLanguagesUseCase`
+
+### Coordinated Runtime Fallback
+
+`FoundationModelExecutionCoordinator` serializes calls across app-supplied sessions and opens a durable circuit after rate limits, quota exhaustion, network failures, or unavailable PCC service. A request error controls routing; availability and quota checks remain advisory.
+
+Each fallback route must come from the app. Before crossing runtimes, its `prepareForFallback` closure receives a `FoundationModelRouteTransition`, which is where the app should compact or rebuild a PCC transcript for the smaller on-device context. The coordinator won't retry guardrail violations, refusals, decoding failures, or a request marked `mayHaveSideEffects`.
+
+Successful and failed executions carry a `FoundationModelRoutingTrace` containing attempted runtimes, the selected runtime, projected failures, cooldowns, circuit state, and the retry decision. `FoundationModelDefaultsCircuitStore` persists circuit state; tests can inject `FoundationModelInMemoryCircuitStateStore`.
 
 ### Model Configuration and Adapters
 
@@ -188,6 +197,39 @@ do {
 }
 ```
 
+### Generated Tool Execution Policy
+
+`FoundationModelToolExecutionPolicy` owns one turn's tool budget. It validates generated JSON before app code runs, detects repeated `(tool, arguments)` calls, and caps calls, repairs, elapsed time, and actual output tokens.
+
+The validator supports required properties, string or numeric enums, integer and number ranges, arrays, `anyOf`, and discriminated unions. Policy decisions return typed `loopDetected`, `invalidArguments`, or `budgetExceeded` results. A side-effecting call must choose app-owned confirmation or a nonempty idempotency key.
+
+```swift
+let policy = FoundationModelToolExecutionPolicy(
+    budget: FoundationModelToolExecutionBudget(
+        maxCalls: 6,
+        maxRepairs: 2,
+        maxDuration: .seconds(10),
+        maxOutputTokens: 256
+    )
+)
+
+let arguments = try FoundationModelToolValue(generatedContent: generatedArguments)
+let result = try await policy.execute(
+    tool: "lookup",
+    arguments: arguments,
+    schema: toolSchema,
+    outputTokenEstimator: estimateOutputTokens
+) {
+    try await lookup(arguments)
+}
+```
+
+### Evaluation Evidence
+
+Add `FoundationModelEvaluation` when an app or benchmark needs evidence that survives OS and device changes. `FoundationModelRuntimeFingerprint.capture()` records OS version and build, device identifier, locale, runtime, context size, and the public model variant when the SDK exposes it.
+
+`FoundationModelEvaluationRunner` records ordered tool events, repair count, latency, token usage, schema validity, refusal or error category, and final success without collecting prompt or response text. `FoundationModelFeedbackBundleBuilder` can pair that trace with `LanguageModelSession.logFeedbackAttachment`; Apple's attachment may contain session content, so consent and redaction stay with the app.
+
 ### Tools
 
 `FoundationModelsTools` provides tools for real app capabilities. Calendar and Reminders reads are separate from mutations. Mutation tools cannot be initialized without an app-owned confirmation provider, and model-authored arguments never contain an approval flag.
@@ -276,7 +318,7 @@ dependencies: [
 ]
 ```
 
-Use the core product, the tools product, or both:
+Use only the products needed by each target:
 
 ```swift
 .target(
@@ -288,6 +330,10 @@ Use the core product, the tools product, or both:
         ),
         .product(
             name: "FoundationModelsTools",
+            package: "FoundationModelsKit"
+        ),
+        .product(
+            name: "FoundationModelEvaluation",
             package: "FoundationModelsKit"
         )
     ]
@@ -340,6 +386,9 @@ Use FoundationModelsKit for:
 - JSON Schema validation and conversion
 - Token accounting
 - Conversation recovery
+- Request serialization, durable circuits, and explicit runtime fallback
+- Runtime tool-argument validation and per-turn execution budgets
+- Model evaluation traces and Feedback Assistant bundles
 - Concrete Apple platform tools
 - App, CLI, and benchmark workflows
 

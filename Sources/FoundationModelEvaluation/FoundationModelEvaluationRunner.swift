@@ -1,36 +1,76 @@
 import Foundation
 import FoundationModelsKit
 
-public struct FoundationModelEvaluationScenario: Sendable {
-    public let toolCalls: [FoundationModelToolCallEvent]
-    public let repairCount: Int
-    public let tokenUsage: ModelTokenUsage?
-    public let schemaValid: Bool?
-    public init(toolCalls: [FoundationModelToolCallEvent] = [], repairCount: Int = 0,
-                tokenUsage: ModelTokenUsage? = nil, schemaValid: Bool? = nil) {
-        self.toolCalls = toolCalls; self.repairCount = repairCount
-        self.tokenUsage = tokenUsage; self.schemaValid = schemaValid
-    }
-}
-
+/// Measures app-owned Foundation Models scenarios and normalizes their terminal evidence.
 public struct FoundationModelEvaluationRunner: Sendable {
-    public typealias Executor = @Sendable (FoundationModelEvaluationScenario) async throws -> Void
-    private let executor: Executor
-    public init(executor: @escaping Executor) { self.executor = executor }
+    public typealias ErrorProjector = @Sendable (any Error) -> FoundationModelErrorProjection?
+    public typealias Operation = @Sendable () async throws -> FoundationModelEvaluationObservation
 
-    public func run(scenario: FoundationModelEvaluationScenario = .init(),
-                    fingerprint: FoundationModelRuntimeFingerprint = .current) async -> FoundationModelExecutionTrace {
-        let start = DispatchTime.now().uptimeNanoseconds
+    private let errorProjector: ErrorProjector
+
+    public init(
+        errorProjector: @escaping ErrorProjector = FoundationModelErrorProjection.project
+    ) {
+        self.errorProjector = errorProjector
+    }
+
+    /// Runs one scenario. Prompt and response text remain app-owned and are not captured.
+    public func run(
+        fingerprint: FoundationModelRuntimeFingerprint = .current,
+        operation: @escaping Operation
+    ) async -> FoundationModelExecutionTrace {
+        let startedAt = Date()
+        let clock = ContinuousClock()
+        let startedInstant = clock.now
+
         do {
-            try await executor(scenario)
-            return FoundationModelExecutionTrace(fingerprint: fingerprint, toolCalls: scenario.toolCalls,
-                repairCount: scenario.repairCount, durationNanoseconds: DispatchTime.now().uptimeNanoseconds - start,
-                tokenUsage: scenario.tokenUsage, schemaValid: scenario.schemaValid, outcome: .succeeded)
+            let observation = try await operation()
+            let finishedAt = Date()
+            return FoundationModelExecutionTrace(
+                startedAt: startedAt,
+                finishedAt: finishedAt,
+                fingerprint: fingerprint,
+                toolCallSequence: observation.toolCallSequence,
+                repairCount: observation.repairCount,
+                latency: FoundationModelLatency(
+                    total: Self.seconds(clock.now - startedInstant),
+                    timeToFirstToken: observation.timeToFirstToken
+                ),
+                tokenUsage: observation.tokenUsage,
+                schemaValid: observation.schemaValid,
+                outcome: .completed,
+                finalSuccess: observation.finalSuccess
+            )
+        } catch is CancellationError {
+            let finishedAt = Date()
+            return FoundationModelExecutionTrace(
+                startedAt: startedAt,
+                finishedAt: finishedAt,
+                fingerprint: fingerprint,
+                latency: FoundationModelLatency(total: Self.seconds(clock.now - startedInstant)),
+                outcome: .cancelled,
+                finalSuccess: false
+            )
         } catch {
-            return FoundationModelExecutionTrace(fingerprint: fingerprint, toolCalls: scenario.toolCalls,
-                repairCount: scenario.repairCount, durationNanoseconds: DispatchTime.now().uptimeNanoseconds - start,
-                tokenUsage: scenario.tokenUsage, schemaValid: scenario.schemaValid,
-                outcome: .failed(projection: FoundationModelErrorProjection.project(error)))
+            let finishedAt = Date()
+            let projection = errorProjector(error)
+            let category = projection?.category
+            let wasRefused = category == .refusal || category == .guardrailViolation
+            return FoundationModelExecutionTrace(
+                startedAt: startedAt,
+                finishedAt: finishedAt,
+                fingerprint: fingerprint,
+                latency: FoundationModelLatency(total: Self.seconds(clock.now - startedInstant)),
+                outcome: wasRefused ? .refused : .failed,
+                refusalOrErrorCategory: category,
+                finalSuccess: false
+            )
         }
+    }
+
+    private static func seconds(_ duration: Duration) -> TimeInterval {
+        let components = duration.components
+        return TimeInterval(components.seconds)
+            + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
     }
 }

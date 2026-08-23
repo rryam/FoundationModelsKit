@@ -5,25 +5,19 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
     public typealias Route = FoundationModelExecutionRoute<Request, Output>
     public typealias ErrorProjector = @Sendable (any Error) -> FoundationModelErrorProjection?
 
-    private struct WaitingExecution {
-        let id: UUID
-        let continuation: CheckedContinuation<Bool, Never>
-    }
-
     private let routes: [Route]
     private let policy: FoundationModelExecutionPolicy
     private let circuitStateStore: any FoundationModelCircuitStatePersisting
+    private let executionGate: FoundationModelExecutionGate
     private let errorProjector: ErrorProjector
     private let now: @Sendable () -> Date
-
-    private var isExecuting = false
-    private var waitingExecutions: [WaitingExecution] = []
 
     public init(
         primary: Route,
         fallbacks: [Route] = [],
         policy: FoundationModelExecutionPolicy = .default,
-        circuitStateStore: any FoundationModelCircuitStatePersisting = FoundationModelInMemoryCircuitStateStore(),
+        circuitStateStore: any FoundationModelCircuitStatePersisting = FoundationModelDefaultsCircuitStore.shared,
+        executionGate: FoundationModelExecutionGate = .shared,
         errorProjector: @escaping ErrorProjector = FoundationModelErrorProjection.project,
         now: @escaping @Sendable () -> Date = { Date() }
     ) throws {
@@ -42,11 +36,12 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
         self.routes = routes
         self.policy = policy
         self.circuitStateStore = circuitStateStore
+        self.executionGate = executionGate
         self.errorProjector = errorProjector
         self.now = now
     }
 
-    /// Executes a request on one serialized lane shared by every caller of this coordinator.
+    /// Executes a request on a serialized lane shared by coordinators and sessions.
     ///
     /// Automatic fallback after an attempted execution is permitted only for transient runtime
     /// failures and requests declared `readOnlyOrIdempotent`.
@@ -55,20 +50,12 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
         safety: FoundationModelExecutionSafety,
         correlationID: UUID = UUID()
     ) async throws -> FoundationModelRoutedResult<Output> {
-        let executionID = UUID()
-        try await acquireExecutionSlot(id: executionID)
-
-        do {
-            let result = try await executeSerially(
+        try await executionGate.perform {
+            try await self.executeSerially(
                 request,
                 safety: safety,
                 correlationID: correlationID
             )
-            releaseExecutionSlot()
-            return result
-        } catch {
-            releaseExecutionSlot()
-            throw error
         }
     }
 
@@ -88,26 +75,35 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
 
             let route = routes[index]
             let attemptStartedAt = now()
-            let storedState = await circuitStateStore.circuitState(for: route.runtime)
-            let circuitPhase = await prepareCircuitForAttempt(
-                storedState,
-                runtime: route.runtime,
-                at: attemptStartedAt
+            let admission = await circuitStateStore.admission(
+                for: route.runtime,
+                at: attemptStartedAt,
+                halfOpenProbeInterval: policy.halfOpenProbeInterval
             )
+            let storedState: FoundationModelCircuitState?
+            let circuitPhase: FoundationModelCircuitState.Phase?
 
-            if let storedState, circuitPhase == .open {
+            switch admission {
+            case .permitted(let phase, let previousState):
+                storedState = previousState
+                circuitPhase = phase
+            case .rejected(let state):
                 let retryDecision = retryDecisionForSkippedRoute(after: index)
                 attempts.append(
                     FoundationModelRoutingTrace.Attempt(
                         runtime: route.runtime,
                         startedAt: attemptStartedAt,
                         finishedAt: now(),
-                        circuitPhase: .open,
+                        circuitPhase: state.phase,
                         outcome: .skippedOpenCircuit,
                         failure: FoundationModelErrorProjection(
-                            category: storedState.failureCategory
+                            category: state.failureCategory
                         ),
-                        nextProbeAt: storedState.nextProbeAt,
+                        nextProbeAt: state.nextProbeAt,
+                        cooldown: max(
+                            0,
+                            state.nextProbeAt.timeIntervalSince(attemptStartedAt)
+                        ),
                         retryDecision: retryDecision
                     )
                 )
@@ -123,7 +119,7 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
 
                 previousRuntime = route.runtime
                 transitionTrigger = FoundationModelErrorProjection(
-                    category: storedState.failureCategory
+                    category: state.failureCategory
                 )
                 continue
             }
@@ -188,7 +184,9 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
                     )
                 )
             } catch is CancellationError {
-                await circuitStateStore.setCircuitState(storedState, for: route.runtime)
+                if circuitPhase != .halfOpen {
+                    await circuitStateStore.setCircuitState(storedState, for: route.runtime)
+                }
                 throw CancellationError()
             } catch {
                 let failure = errorProjector(error)
@@ -203,16 +201,20 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
                     safety: safety,
                     routeIndex: index
                 )
+                let finishedAt = now()
                 attempts.append(
                     FoundationModelRoutingTrace.Attempt(
                         runtime: route.runtime,
                         startedAt: attemptStartedAt,
-                        finishedAt: now(),
+                        finishedAt: finishedAt,
                         circuitPhase: circuitPhase,
                         outcome: .failed,
                         failure: failure,
                         errorType: String(reflecting: type(of: error)),
                         nextProbeAt: nextProbeAt,
+                        cooldown: nextProbeAt.map {
+                            max(0, $0.timeIntervalSince(finishedAt))
+                        },
                         retryDecision: retryDecision
                     )
                 )
@@ -238,25 +240,6 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
             attempts: attempts,
             underlyingError: lastError
         )
-    }
-
-    private func prepareCircuitForAttempt(
-        _ state: FoundationModelCircuitState?,
-        runtime: FoundationModelRuntime,
-        at date: Date
-    ) async -> FoundationModelCircuitState.Phase? {
-        guard let state else { return nil }
-        guard state.nextProbeAt <= date else { return .open }
-
-        let halfOpenState = FoundationModelCircuitState(
-            phase: .halfOpen,
-            failureCategory: state.failureCategory,
-            openedAt: state.openedAt,
-            nextProbeAt: date.addingTimeInterval(policy.halfOpenProbeInterval),
-            consecutiveFailures: state.consecutiveFailures
-        )
-        await circuitStateStore.setCircuitState(halfOpenState, for: runtime)
-        return .halfOpen
     }
 
     private func updateCircuit(
@@ -333,45 +316,4 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
         )
     }
 
-    private func acquireExecutionSlot(id: UUID) async throws {
-        try Task.checkCancellation()
-
-        let acquired = await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                if isExecuting {
-                    waitingExecutions.append(
-                        WaitingExecution(id: id, continuation: continuation)
-                    )
-                } else {
-                    isExecuting = true
-                    continuation.resume(returning: true)
-                }
-            }
-        } onCancel: {
-            Task { await self.cancelWaitingExecution(id: id) }
-        }
-
-        guard acquired else { throw CancellationError() }
-        if Task.isCancelled {
-            releaseExecutionSlot()
-            throw CancellationError()
-        }
-    }
-
-    private func cancelWaitingExecution(id: UUID) {
-        guard let index = waitingExecutions.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-        let waitingExecution = waitingExecutions.remove(at: index)
-        waitingExecution.continuation.resume(returning: false)
-    }
-
-    private func releaseExecutionSlot() {
-        guard !waitingExecutions.isEmpty else {
-            isExecuting = false
-            return
-        }
-        let nextExecution = waitingExecutions.removeFirst()
-        nextExecution.continuation.resume(returning: true)
-    }
 }

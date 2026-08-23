@@ -1,113 +1,242 @@
 import Foundation
 
-/// JSON values supplied by a model when it invokes a tool.
-public enum FoundationModelToolValue: Codable, Equatable, Hashable, Sendable {
-  case object([String: FoundationModelToolValue])
-  case array([FoundationModelToolValue])
-  case string(String)
-  case number(Double)
-  case boolean(Bool)
-  case null
-
-  public init(from decoder: Decoder) throws {
-    if let c = try? decoder.singleValueContainer(), c.decodeNil() { self = .null; return }
-    if let c = try? decoder.singleValueContainer(), let b = try? c.decode(Bool.self) { self = .boolean(b); return }
-    if let c = try? decoder.singleValueContainer(), let n = try? c.decode(Double.self) { self = .number(n); return }
-    if let c = try? decoder.singleValueContainer(), let s = try? c.decode(String.self) { self = .string(s); return }
-    if var c = try? decoder.unkeyedContainer() {
-      var values: [FoundationModelToolValue] = []
-      while !c.isAtEnd { values.append(try c.decode(Self.self)) }
-      self = .array(values); return
-    }
-    let c = try decoder.container(keyedBy: AnyCodingKey.self)
-    var values: [String: FoundationModelToolValue] = [:]
-    for key in c.allKeys { values[key.stringValue] = try c.decode(Self.self, forKey: key) }
-    self = .object(values)
-  }
-
-  public func encode(to encoder: Encoder) throws {
-    switch self {
-    case .null: var c = encoder.singleValueContainer(); try c.encodeNil()
-    case .boolean(let v): var c = encoder.singleValueContainer(); try c.encode(v)
-    case .number(let v): var c = encoder.singleValueContainer(); try c.encode(v)
-    case .string(let v): var c = encoder.singleValueContainer(); try c.encode(v)
-    case .array(let v): var c = encoder.unkeyedContainer(); for value in v { try c.encode(value) }
-    case .object(let v): try v.encode(to: encoder)
-    }
-  }
-  private struct AnyCodingKey: CodingKey { let stringValue: String; let intValue: Int?; init?(stringValue: String) { self.stringValue = stringValue; intValue = nil }; init?(intValue: Int) { stringValue = String(intValue); self.intValue = intValue } }
+private enum FoundationModelTimedToolResult<Output: Sendable>: Sendable {
+    case output(Output)
+    case deadlineReached
 }
 
-/// A provider-neutral validation schema for model-authored tool arguments.
-public final class FoundationModelToolSchema: Codable, Sendable, Equatable {
-  public let type: String?
-  public let properties: [String: FoundationModelToolSchema]?
-  public let required: [String]
-  public let enumValues: [FoundationModelToolValue]?
-  public let anyOf: [FoundationModelToolSchema]?
-  public let minimum: Double?
-  public let maximum: Double?
-  public let items: FoundationModelToolSchema?
-  public let additionalProperties: Bool
-  public init(type: String? = nil, properties: [String: FoundationModelToolSchema]? = nil, required: [String] = [], enumValues: [FoundationModelToolValue]? = nil, anyOf: [FoundationModelToolSchema]? = nil, minimum: Double? = nil, maximum: Double? = nil, items: FoundationModelToolSchema? = nil, additionalProperties: Bool = false) { self.type = type; self.properties = properties; self.required = required; self.enumValues = enumValues; self.anyOf = anyOf; self.minimum = minimum; self.maximum = maximum; self.items = items; self.additionalProperties = additionalProperties }
-  public static func == (lhs: FoundationModelToolSchema, rhs: FoundationModelToolSchema) -> Bool { lhs.type == rhs.type && lhs.properties == rhs.properties && lhs.required == rhs.required && lhs.enumValues == rhs.enumValues && lhs.anyOf == rhs.anyOf && lhs.minimum == rhs.minimum && lhs.maximum == rhs.maximum && lhs.items == rhs.items && lhs.additionalProperties == rhs.additionalProperties }
-}
-
-public enum FoundationModelToolExecutionFailure: Error, Equatable, Sendable {
-  case invalidArguments(path: String, reason: String)
-  case loopDetected(tool: String)
-  case budgetExceeded(String)
-  case confirmationRequired(tool: String)
-}
-
-public struct FoundationModelToolExecutionBudget: Sendable, Equatable {
-  public var maxCalls: Int; public var maxRepairs: Int; public var maxDuration: Duration?; public var maxOutputTokens: Int?
-  public init(maxCalls: Int = 16, maxRepairs: Int = 2, maxDuration: Duration? = nil, maxOutputTokens: Int? = nil) { self.maxCalls = maxCalls; self.maxRepairs = maxRepairs; self.maxDuration = maxDuration; self.maxOutputTokens = maxOutputTokens }
-}
-
-public enum FoundationModelToolSideEffect: Sendable, Equatable {
-  case none
-  case confirmation
-  case idempotency(key: String)
-}
-
-public protocol FoundationModelToolExecutionConfirming: Sendable { func confirm(tool: String, arguments: FoundationModelToolValue) async -> Bool }
-
-/// Validates and supervises tool calls independently of the model provider.
+/// Validates and supervises model-directed tool calls for one turn.
 public actor FoundationModelToolExecutionPolicy {
-  private let budget: FoundationModelToolExecutionBudget
-  private var calls = 0; private var repairs = 0; private var seen = Set<String>(); private let clock = ContinuousClock(); private let started = ContinuousClock.Instant.now
-  public init(budget: FoundationModelToolExecutionBudget = .init()) { self.budget = budget }
-  public func recordRepair() throws { guard repairs < budget.maxRepairs else { throw FoundationModelToolExecutionFailure.budgetExceeded("repair limit") }; repairs += 1 }
-  public func execute<T: Sendable>(tool: String, arguments: FoundationModelToolValue, schema: FoundationModelToolSchema, sideEffect: FoundationModelToolSideEffect = .none, confirmer: (any FoundationModelToolExecutionConfirming)? = nil, outputTokenEstimator: @escaping @Sendable (T) -> Int = { _ in 0 }, operation: @escaping @Sendable () async throws -> T) async throws -> T {
-    guard calls < budget.maxCalls else { throw FoundationModelToolExecutionFailure.budgetExceeded("call limit") }
-    if let limit = budget.maxDuration, clock.now - started > limit { throw FoundationModelToolExecutionFailure.budgetExceeded("duration limit") }
-    try validate(arguments, against: schema, path: "$")
-    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; let key = try String(data: encoder.encode(arguments), encoding: .utf8) ?? ""
-    guard seen.insert(tool + "\0" + key).inserted else { throw FoundationModelToolExecutionFailure.loopDetected(tool: tool) }
-    if case .confirmation = sideEffect { guard let confirmer, await confirmer.confirm(tool: tool, arguments: arguments) else { throw FoundationModelToolExecutionFailure.confirmationRequired(tool: tool) } }
-    calls += 1
-    try Task.checkCancellation(); let output = try await operation(); try Task.checkCancellation()
-    if let limit = budget.maxOutputTokens, outputTokenEstimator(output) > limit { throw FoundationModelToolExecutionFailure.budgetExceeded("output-token limit") }
-    return output
-  }
-  private func validate(_ value: FoundationModelToolValue, against schema: FoundationModelToolSchema, path: String) throws {
-    if let branches = schema.anyOf {
-      let matches = branches.contains { (try? validate(value, against: $0, path: path)) == nil }
-      if !matches { throw FoundationModelToolExecutionFailure.invalidArguments(path: path, reason: "does not match any schema branch") }
+    public typealias OutputTokenEstimator<Output: Sendable> = @Sendable (Output) async throws -> Int
+
+    private struct CallIdentity: Hashable, Sendable {
+        let toolName: String
+        let canonicalArguments: Data
     }
-    if let e = schema.enumValues, !e.contains(value) { throw FoundationModelToolExecutionFailure.invalidArguments(path: path, reason: "not in enum") }
-    switch (schema.type, value) {
-    case ("object", .object(let object)):
-      for name in schema.required where object[name] == nil { throw FoundationModelToolExecutionFailure.invalidArguments(path: path, reason: "missing required property \(name)") }
-      if !schema.additionalProperties, let properties = schema.properties { for name in object.keys where properties[name] == nil { throw FoundationModelToolExecutionFailure.invalidArguments(path: path, reason: "unknown property \(name)") } }
-      for (name, child) in schema.properties ?? [:] where object[name] != nil { try validate(object[name]!, against: child, path: path + "." + name) }
-    case ("array", .array(let values)): for (i, value) in values.enumerated() { if let items = schema.items { try validate(value, against: items, path: "\(path)[\(i)]") } }
-    case ("string", .string), ("boolean", .boolean), ("number", .number): break
-    case ("integer", .number(let number)) where number.rounded() == number: break
-    case (nil, _): break
-    default: throw FoundationModelToolExecutionFailure.invalidArguments(path: path, reason: "wrong type")
+
+    private let budget: FoundationModelToolExecutionBudget
+    private let validator: FoundationModelToolArgumentValidator
+    private let elapsedTime: @Sendable () -> Duration
+
+    private var callCount = 0
+    private var repairCount = 0
+    private var seenCalls: Set<CallIdentity> = []
+    private var reservedIdempotencyKeys: [String: CallIdentity] = [:]
+
+    public init(
+        budget: FoundationModelToolExecutionBudget = FoundationModelToolExecutionBudget(),
+        validator: FoundationModelToolArgumentValidator = FoundationModelToolArgumentValidator()
+    ) {
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        self.budget = budget
+        self.validator = validator
+        self.elapsedTime = { clock.now - startedAt }
     }
-    if case .number(let number) = value { if let min = schema.minimum, number < min { throw FoundationModelToolExecutionFailure.invalidArguments(path: path, reason: "below minimum") }; if let max = schema.maximum, number > max { throw FoundationModelToolExecutionFailure.invalidArguments(path: path, reason: "above maximum") } }
-  }
+
+    init(
+        budget: FoundationModelToolExecutionBudget,
+        validator: FoundationModelToolArgumentValidator = FoundationModelToolArgumentValidator(),
+        elapsedTime: @escaping @Sendable () -> Duration
+    ) {
+        self.budget = budget
+        self.validator = validator
+        self.elapsedTime = elapsedTime
+    }
+
+    /// Returns the call and repair usage accumulated by this per-turn policy.
+    public func usage() -> FoundationModelToolExecutionUsage {
+        FoundationModelToolExecutionUsage(
+            callCount: callCount,
+            repairCount: repairCount,
+            elapsed: elapsedTime()
+        )
+    }
+
+    /// Validates, authorizes, and executes one generated tool call.
+    ///
+    /// Policy rejections are returned as typed results. Errors thrown by app-owned confirmation,
+    /// token estimation, or tool code remain authoritative and are propagated without retry.
+    public func execute<Output: Sendable>(
+        tool toolName: String,
+        arguments: FoundationModelToolValue,
+        schema: FoundationModelToolSchema,
+        attempt: FoundationModelToolExecutionAttempt = .initial,
+        effect: FoundationModelToolEffect = .readOnly,
+        confirmer: (any FoundationModelToolExecutionConfirming)? = nil,
+        outputTokenEstimator: OutputTokenEstimator<Output>? = nil,
+        operation: @escaping @Sendable () async throws -> Output
+    ) async throws -> FoundationModelToolExecutionResult<Output> {
+        try Task.checkCancellation()
+
+        if let exceeded = admissionBudgetExceeded(for: attempt) {
+            return .budgetExceeded(exceeded)
+        }
+
+        guard let canonicalArguments = try? arguments.canonicalJSONData() else {
+            return .invalidArguments([
+                FoundationModelToolArgumentIssue(
+                    code: .invalidJSONNumber,
+                    path: "$",
+                    message: "Arguments cannot be represented as JSON."
+                )
+            ])
+        }
+
+        callCount += 1
+        if attempt == .repair {
+            repairCount += 1
+        }
+
+        let identity = CallIdentity(toolName: toolName, canonicalArguments: canonicalArguments)
+        let callFingerprint = Self.fingerprint(for: identity)
+        guard seenCalls.insert(identity).inserted else {
+            return .loopDetected(FoundationModelToolLoop(
+                toolName: toolName,
+                callFingerprint: callFingerprint
+            ))
+        }
+
+        let issues = validator.issues(in: arguments, against: schema)
+        guard issues.isEmpty else {
+            return .invalidArguments(issues)
+        }
+
+        if let maxOutputTokens = budget.maxOutputTokens, outputTokenEstimator == nil {
+            return .budgetExceeded(.outputTokenEstimatorRequired(limit: maxOutputTokens))
+        }
+
+        switch effect {
+        case .readOnly:
+            break
+        case .sideEffect(.confirmation):
+            let request = FoundationModelToolConfirmationRequest(
+                toolName: toolName,
+                callFingerprint: callFingerprint
+            )
+            guard let confirmer, await confirmer.confirm(request, arguments: arguments) else {
+                return .confirmationRequired(request)
+            }
+        case .sideEffect(.idempotency(let key)):
+            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedKey.isEmpty else {
+                return .invalidArguments([
+                    FoundationModelToolArgumentIssue(
+                        code: .invalidIdempotencyKey,
+                        path: "$",
+                        message: "A side-effecting tool requires a nonempty idempotency key."
+                    )
+                ])
+            }
+
+            let scopedKey = "\(toolName)\u{0}\(normalizedKey)"
+            if let priorIdentity = reservedIdempotencyKeys[scopedKey], priorIdentity != identity {
+                return .invalidArguments([
+                    FoundationModelToolArgumentIssue(
+                        code: .idempotencyKeyConflict,
+                        path: "$",
+                        message: "The idempotency key is already reserved for different arguments."
+                    )
+                ])
+            }
+            reservedIdempotencyKeys[scopedKey] = identity
+        }
+
+        try Task.checkCancellation()
+        if let exceeded = durationBudgetExceeded() {
+            return .budgetExceeded(exceeded)
+        }
+
+        let operationResult = try await raceAgainstDuration(operation)
+        guard case .output(let output) = operationResult else {
+            return .budgetExceeded(.duration(limit: budget.maxDuration ?? .zero))
+        }
+        try Task.checkCancellation()
+
+        if let exceeded = durationBudgetExceeded() {
+            return .budgetExceeded(exceeded)
+        }
+
+        let outputTokenCount: Int?
+        if let outputTokenEstimator {
+            let estimationResult = try await raceAgainstDuration {
+                try await outputTokenEstimator(output)
+            }
+            guard case .output(let estimatedTokens) = estimationResult else {
+                return .budgetExceeded(.duration(limit: budget.maxDuration ?? .zero))
+            }
+            outputTokenCount = max(0, estimatedTokens)
+        } else {
+            outputTokenCount = nil
+        }
+
+        if let exceeded = durationBudgetExceeded() {
+            return .budgetExceeded(exceeded)
+        }
+        if let limit = budget.maxOutputTokens,
+           let outputTokenCount,
+           outputTokenCount > limit {
+            return .budgetExceeded(.outputTokens(limit: limit, actual: outputTokenCount))
+        }
+
+        return .succeeded(output, usage: usage(), outputTokenCount: outputTokenCount)
+    }
+
+    private func admissionBudgetExceeded(
+        for attempt: FoundationModelToolExecutionAttempt
+    ) -> FoundationModelToolBudgetExceeded? {
+        if callCount >= budget.maxCalls {
+            return .callCount(limit: budget.maxCalls)
+        }
+        if attempt == .repair, repairCount >= budget.maxRepairs {
+            return .repairCount(limit: budget.maxRepairs)
+        }
+        return durationBudgetExceeded()
+    }
+
+    private func durationBudgetExceeded() -> FoundationModelToolBudgetExceeded? {
+        guard let limit = budget.maxDuration, elapsedTime() >= limit else {
+            return nil
+        }
+        return .duration(limit: limit)
+    }
+
+    private func raceAgainstDuration<Output: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Output
+    ) async throws -> FoundationModelTimedToolResult<Output> {
+        guard let limit = budget.maxDuration else {
+            return .output(try await operation())
+        }
+
+        let remaining = limit - elapsedTime()
+        guard remaining > .zero else {
+            return .deadlineReached
+        }
+
+        return try await withThrowingTaskGroup(
+            of: FoundationModelTimedToolResult<Output>.self
+        ) { group in
+            group.addTask {
+                .output(try await operation())
+            }
+            group.addTask {
+                try await Task.sleep(for: remaining)
+                return .deadlineReached
+            }
+
+            let first = try await group.next() ?? .deadlineReached
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private static func fingerprint(for identity: CallIdentity) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        let bytes = Array(identity.toolName.utf8) + [0] + Array(identity.canonicalArguments)
+        for byte in bytes {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
 }
