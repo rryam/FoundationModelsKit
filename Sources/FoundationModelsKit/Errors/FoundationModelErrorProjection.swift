@@ -77,7 +77,7 @@ public struct FoundationModelErrorProjection: Sendable, Hashable, Codable {
         return nil
     }
 
-    private init(
+    public init(
         category: Category,
         contextSize: Int? = nil,
         attemptedTokenCount: Int? = nil,
