@@ -216,6 +216,49 @@ struct FoundationModelToolExecutionPolicyTests {
         #expect(await confirmer.confirmationCount == 1)
     }
 
+    @Test("A call awaiting confirmation can be retried after approval")
+    func confirmationRetryExecutes() async throws {
+        let confirmer = ApprovingConfirmer()
+        let probe = ToolOperationProbe()
+        let policy = FoundationModelToolExecutionPolicy()
+        let schema = FoundationModelToolSchema(type: .object)
+        let arguments = FoundationModelToolValue.object([:])
+
+        let pending = try await policy.execute(
+            tool: "delete",
+            arguments: arguments,
+            schema: schema,
+            effect: .sideEffect(.confirmation),
+            operation: {
+                await probe.recordExecution()
+                return true
+            }
+        )
+        guard case .confirmationRequired = pending else {
+            Issue.record("Expected confirmation to be required")
+            return
+        }
+
+        let approved = try await policy.execute(
+            tool: "delete",
+            arguments: arguments,
+            schema: schema,
+            effect: .sideEffect(.confirmation),
+            confirmer: confirmer,
+            operation: {
+                await probe.recordExecution()
+                return true
+            }
+        )
+
+        guard case .succeeded(let output, _, _) = approved else {
+            Issue.record("Expected the approved retry to execute")
+            return
+        }
+        #expect(output)
+        #expect(await probe.executionCount == 1)
+    }
+
     @Test("An idempotency key cannot be reused with different arguments")
     func rejectsIdempotencyKeyConflict() async throws {
         let policy = FoundationModelToolExecutionPolicy()

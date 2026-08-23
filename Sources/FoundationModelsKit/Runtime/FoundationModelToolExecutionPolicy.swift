@@ -115,6 +115,7 @@ public actor FoundationModelToolExecutionPolicy {
                 callFingerprint: callFingerprint
             )
             guard let confirmer, await confirmer.confirm(request, arguments: arguments) else {
+                seenCalls.remove(identity)
                 return .confirmationRequired(request)
             }
         case .sideEffect(.idempotency(let key)):

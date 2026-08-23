@@ -118,6 +118,120 @@ struct FoundationModelExecutionCoordinatorTests {
         #expect(await store.circuitState(for: .privateCloudCompute) == nil)
     }
 
+    @Test("Cancelling a half-open execution restores the open circuit")
+    func cancellationRestoresHalfOpenCircuit() async throws {
+        let date = Date(timeIntervalSince1970: 1_000)
+        let originalState = FoundationModelCircuitState(
+            phase: .open,
+            failureCategory: .networkFailure,
+            openedAt: date.addingTimeInterval(-600),
+            nextProbeAt: date.addingTimeInterval(-1),
+            consecutiveFailures: 2
+        )
+        let store = FoundationModelInMemoryCircuitStateStore(
+            states: [.privateCloudCompute: originalState]
+        )
+        let coordinator = try FoundationModelExecutionCoordinator<String, String>(
+            primary: FoundationModelExecutionRoute(runtime: .privateCloudCompute) { _ in
+                throw CancellationError()
+            },
+            circuitStateStore: store,
+            now: { date }
+        )
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await coordinator.execute("probe", safety: .readOnlyOrIdempotent)
+        }
+        #expect(await store.circuitState(for: .privateCloudCompute) == originalState)
+    }
+
+    @Test("A cancelled fallback preparation restores its half-open circuit")
+    func cancelledPreparationRestoresHalfOpenCircuit() async throws {
+        let date = Date(timeIntervalSince1970: 1_000)
+        let primaryState = FoundationModelCircuitState(
+            phase: .open,
+            failureCategory: .serviceUnavailable,
+            openedAt: date.addingTimeInterval(-600),
+            nextProbeAt: date.addingTimeInterval(600),
+            consecutiveFailures: 1
+        )
+        let fallbackState = FoundationModelCircuitState(
+            phase: .open,
+            failureCategory: .networkFailure,
+            openedAt: date.addingTimeInterval(-600),
+            nextProbeAt: date.addingTimeInterval(-1),
+            consecutiveFailures: 2
+        )
+        let store = FoundationModelInMemoryCircuitStateStore(
+            states: [
+                .privateCloudCompute: primaryState,
+                .onDevice: fallbackState
+            ]
+        )
+        let coordinator = try FoundationModelExecutionCoordinator<String, String>(
+            primary: FoundationModelExecutionRoute(runtime: .privateCloudCompute) { request in request },
+            fallbacks: [
+                FoundationModelExecutionRoute(
+                    runtime: .onDevice,
+                    prepareForFallback: { _, _ in throw CancellationError() },
+                    execute: { request in request }
+                )
+            ],
+            circuitStateStore: store,
+            now: { date }
+        )
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await coordinator.execute("probe", safety: .readOnlyOrIdempotent)
+        }
+        #expect(await store.circuitState(for: .onDevice) == fallbackState)
+    }
+
+    @Test("A failed fallback preparation restores its half-open circuit")
+    func failedPreparationRestoresHalfOpenCircuit() async throws {
+        let date = Date(timeIntervalSince1970: 1_000)
+        let primaryState = FoundationModelCircuitState(
+            phase: .open,
+            failureCategory: .serviceUnavailable,
+            openedAt: date.addingTimeInterval(-600),
+            nextProbeAt: date.addingTimeInterval(600),
+            consecutiveFailures: 1
+        )
+        let fallbackState = FoundationModelCircuitState(
+            phase: .open,
+            failureCategory: .networkFailure,
+            openedAt: date.addingTimeInterval(-600),
+            nextProbeAt: date.addingTimeInterval(-1),
+            consecutiveFailures: 2
+        )
+        let store = FoundationModelInMemoryCircuitStateStore(
+            states: [
+                .privateCloudCompute: primaryState,
+                .onDevice: fallbackState
+            ]
+        )
+        let coordinator = try FoundationModelExecutionCoordinator<String, String>(
+            primary: FoundationModelExecutionRoute(runtime: .privateCloudCompute) { request in request },
+            fallbacks: [
+                FoundationModelExecutionRoute(
+                    runtime: .onDevice,
+                    prepareForFallback: { _, _ in
+                        throw StubExecutionError(category: .unknown)
+                    },
+                    execute: { request in request }
+                )
+            ],
+            circuitStateStore: store,
+            errorProjector: projectStubError,
+            now: { date }
+        )
+
+        await #expect(throws: FoundationModelExecutionFailure.self) {
+            _ = try await coordinator.execute("probe", safety: .readOnlyOrIdempotent)
+        }
+        #expect(await store.circuitState(for: .onDevice) == fallbackState)
+    }
+
     @Test("Non-retryable model failures do not reach a fallback")
     func nonRetryableFailureStopsRouting() async throws {
         let fallbackProbe = InvocationProbe()

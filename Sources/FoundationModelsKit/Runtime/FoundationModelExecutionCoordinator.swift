@@ -134,7 +134,19 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
 
                 do {
                     preparedRequest = try await route.prepare(request, for: transition)
+                } catch is CancellationError {
+                    await restoreHalfOpenReservation(
+                        previousState: storedState,
+                        attemptedPhase: circuitPhase,
+                        runtime: route.runtime
+                    )
+                    throw CancellationError()
                 } catch {
+                    await restoreHalfOpenReservation(
+                        previousState: storedState,
+                        attemptedPhase: circuitPhase,
+                        runtime: route.runtime
+                    )
                     let failure = errorProjector(error)
                     attempts.append(
                         FoundationModelRoutingTrace.Attempt(
@@ -184,9 +196,11 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
                     )
                 )
             } catch is CancellationError {
-                if circuitPhase != .halfOpen {
-                    await circuitStateStore.setCircuitState(storedState, for: route.runtime)
-                }
+                await restoreHalfOpenReservation(
+                    previousState: storedState,
+                    attemptedPhase: circuitPhase,
+                    runtime: route.runtime
+                )
                 throw CancellationError()
             } catch {
                 let failure = errorProjector(error)
@@ -314,6 +328,15 @@ public actor FoundationModelExecutionCoordinator<Request: Sendable, Output: Send
             ),
             underlyingError: underlyingError
         )
+    }
+
+    private func restoreHalfOpenReservation(
+        previousState: FoundationModelCircuitState?,
+        attemptedPhase: FoundationModelCircuitState.Phase?,
+        runtime: FoundationModelRuntime
+    ) async {
+        guard attemptedPhase == .halfOpen else { return }
+        await circuitStateStore.setCircuitState(previousState, for: runtime)
     }
 
 }
