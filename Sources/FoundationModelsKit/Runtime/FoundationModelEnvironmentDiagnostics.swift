@@ -68,6 +68,13 @@ public struct FoundationModelEnvironmentDiagnostics: Sendable {
     ) -> FoundationModelEnvironmentIssue? {
         guard !status.isRunnableInCurrentProcess else { return nil }
 
+        if status.runtime == .privateCloudCompute, status.authorization == .missing {
+            return issue(
+                .missingPrivateCloudEntitlement,
+                actions: [.addPrivateCloudComputeEntitlement]
+            )
+        }
+
         switch status.reason {
         case .unsupportedOperatingSystem:
             return issue(.unsupportedOperatingSystem, actions: [.useSupportedOperatingSystem])

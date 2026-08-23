@@ -49,6 +49,22 @@ struct EnvironmentDiagnosticsTests {
         #expect(issue.actions == [.addPrivateCloudComputeEntitlement])
     }
 
+    @Test("A missing PCC entitlement takes precedence over a broader availability reason")
+    func prioritizesMissingEntitlement() throws {
+        let report = diagnostics(
+            status: FoundationModelRuntimeStatus(
+                runtime: .privateCloudCompute,
+                isAvailable: false,
+                authorization: .missing,
+                reason: .systemNotReady
+            )
+        ).report(for: .privateCloudCompute)
+        let issue = try #require(report.issues.last)
+
+        #expect(issue.code == .missingPrivateCloudEntitlement)
+        #expect(issue.actions == [.addPrivateCloudComputeEntitlement])
+    }
+
     @Test("External macOS boot volumes remain visible even when availability says available")
     func reportsExternalBootVolume() {
         let environment = FoundationModelRuntimeEnvironment(
