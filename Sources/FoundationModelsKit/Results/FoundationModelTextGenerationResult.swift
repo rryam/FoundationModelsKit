@@ -1,6 +1,10 @@
 import Foundation
 
-public struct FoundationModelTextGenerationResult: FoundationModelCapabilityResult, Sendable, Hashable {
+public struct FoundationModelTextGenerationResult:
+    FoundationModelCapabilityResult,
+    Codable,
+    Hashable,
+    Sendable {
     public let content: String
     public let metadata: FoundationModelExecutionMetadata
 
