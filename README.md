@@ -224,6 +224,35 @@ let result = try await policy.execute(
 }
 ```
 
+### Typed Tool Result Routing
+
+`FoundationModelToolResultRouter` collects the final decision for each tool call and maps successful outputs into an app-defined enum. This avoids forcing several tool result types through one generated response type.
+
+```swift
+enum HealthOutcome: Sendable {
+    case sleep(SleepSummary)
+    case exercise(ExerciseSummary)
+}
+
+let router = FoundationModelToolResultRouter<HealthOutcome>()
+try await router.recordSuccess(
+    tool: "sleep",
+    arguments: generatedArguments,
+    outcome: .sleep(summary)
+)
+
+switch await router.routingResult() {
+case .none:
+    break
+case .one(let outcome):
+    present(outcome)
+case .many(let outcomes):
+    presentAll(outcomes)
+}
+```
+
+The router keeps actor insertion order and doesn't pick one result when several tools succeed. It stores only an argument fingerprint by default; apps must opt in before raw generated arguments are retained. A fingerprint hides the original value from ordinary logs, but it isn't anonymization for low-entropy arguments.
+
 ### Evaluation Evidence
 
 Add `FoundationModelEvaluation` when an app or benchmark needs evidence that survives OS and device changes. `FoundationModelRuntimeFingerprint.capture()` records OS version and build, device identifier, locale, runtime, context size, and the public model variant when the SDK exposes it.
