@@ -80,6 +80,25 @@ let result = try await FoundationModelTextGenerationUseCase().execute(request)
 print(result.content)
 ```
 
+On iOS 27 and macOS 27, text-generation requests can include labeled image files through Apple's [multimodal prompting APIs](https://developer.apple.com/documentation/foundationmodels/analyzing-images-with-multimodal-prompting). Labels are stable identifiers the model can use to distinguish attachments. The native `Attachment` bridge is compiler- and availability-gated, so text-only requests remain compatible with OS 26.
+
+```swift
+let image = FoundationModelImageAttachment(
+    label: "receipt",
+    imageURL: receiptURL,
+    orientation: .right
+)
+let request = FoundationModelTextGenerationRequest(
+    prompt: "List the merchant, date, and total shown in this image.",
+    imageAttachments: [image],
+    context: FoundationModelInvocationContext(source: .app)
+)
+
+let result = try await FoundationModelTextGenerationUseCase().execute(request)
+```
+
+Before execution, `FoundationModelsTextGenerator` requires unique nonempty labels, local nonempty image files recognized by Image I/O, at most eight attachments, and at most 20 MiB per attachment. Those package safety budgets are configurable with `FoundationModelImageAttachmentPolicy`; they are not claims about the model's own limits. Image prompting requires the Xcode 27 SDK and an iOS 27 or macOS 27 runtime.
+
 Available use cases include:
 
 - `FoundationModelTextGenerationUseCase`
@@ -287,7 +306,9 @@ let replay = try FoundationModelReplayTextGenerator(cassette: cassette)
 let deterministicResult = try await replay.generateText(for: request)
 ```
 
-Cassettes contain complete prompts, instructions, adapter URLs, and responses. Creating or exporting one is an explicit app decision; the package doesn't redact or persist it automatically. `FoundationModelEvaluationSnapshot` removes run IDs, dates, and latency so checked-in golden comparisons report drift only in stable evaluation fields.
+Cassette format 2 contains complete prompts, instructions, adapter URLs, and responses while remaining able to replay format 1 text-only fixtures. Creating or exporting one is an explicit app decision. Image attachments are the exception: `FoundationModelRecordingTextGenerator` validates each file and records only its label, orientation, Image I/O type, byte count, and SHA-256 digest. It never copies image pixels or local file URLs into a cassette. Replay matches the digest, so identical content can move to a different path. A content digest can still identify predictable or previously known material; treat it as pseudonymous metadata rather than anonymization.
+
+Directly encoding `FoundationModelTextGenerationRequest` preserves executable image file URLs. Use the recording wrapper when exporting fixtures, and apply the same review and storage policy to prompt and response text. `FoundationModelEvaluationSnapshot` removes run IDs, dates, and latency so checked-in golden comparisons report drift only in stable evaluation fields.
 
 ### Tools
 
