@@ -7,6 +7,7 @@ public struct FoundationModelToolInvocation<Outcome: Sendable>: Sendable {
         case loopDetected = "loop_detected"
         case invalidArguments = "invalid_arguments"
         case budgetExceeded = "budget_exceeded"
+        case authorizationDenied = "authorization_denied"
         case confirmationRequired = "confirmation_required"
         case failed
     }

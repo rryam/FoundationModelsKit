@@ -195,8 +195,83 @@ struct FoundationModelToolExecutionPolicyTests {
         #expect(issues.first?.code == .invalidIdempotencyKey)
     }
 
+    @Test("Authorization denial prevents read-only tool execution")
+    func deniesUnauthorizedRead() async throws {
+        let denial = FoundationModelToolAuthorizationDenial(code: "resource_access_revoked")
+        let authorizer = ScriptedAuthorizer([.denied(denial)])
+        let probe = ToolOperationProbe()
+        let policy = FoundationModelToolExecutionPolicy()
+
+        let result = try await policy.execute(
+            tool: "private-record",
+            arguments: .object([:]),
+            schema: FoundationModelToolSchema(type: .object),
+            authorizer: authorizer
+        ) {
+            await probe.recordExecution()
+            return "unreachable"
+        }
+
+        #expect(result == .authorizationDenied(denial))
+        #expect(await probe.executionCount == 0)
+        #expect(await authorizer.phases() == [.beforeExecution])
+    }
+
+    @Test("Authorization denial does not present confirmation")
+    func deniesBeforeConfirmation() async throws {
+        let denial = FoundationModelToolAuthorizationDenial(code: "capability_not_granted")
+        let authorizer = ScriptedAuthorizer([.denied(denial)])
+        let confirmer = ApprovingConfirmer()
+        let probe = ToolOperationProbe()
+        let policy = FoundationModelToolExecutionPolicy()
+
+        let result = try await policy.execute(
+            tool: "delete",
+            arguments: .object([:]),
+            schema: FoundationModelToolSchema(type: .object),
+            effect: .sideEffect(.confirmation),
+            authorizer: authorizer,
+            confirmer: confirmer
+        ) {
+            await probe.recordExecution()
+            return true
+        }
+
+        #expect(result == .authorizationDenied(denial))
+        #expect(await authorizer.phases() == [.beforeConfirmation])
+        #expect(await confirmer.confirmationCount == 0)
+        #expect(await probe.executionCount == 0)
+    }
+
+    @Test("Authorization is re-evaluated after confirmation")
+    func reauthorizesAfterConfirmation() async throws {
+        let denial = FoundationModelToolAuthorizationDenial(code: "authorization_revoked")
+        let authorizer = ScriptedAuthorizer([.allowed, .denied(denial)])
+        let confirmer = ApprovingConfirmer()
+        let probe = ToolOperationProbe()
+        let policy = FoundationModelToolExecutionPolicy()
+
+        let result = try await policy.execute(
+            tool: "save",
+            arguments: .object([:]),
+            schema: FoundationModelToolSchema(type: .object),
+            effect: .sideEffect(.confirmation),
+            authorizer: authorizer,
+            confirmer: confirmer
+        ) {
+            await probe.recordExecution()
+            return "unreachable"
+        }
+
+        #expect(result == .authorizationDenied(denial))
+        #expect(await authorizer.phases() == [.beforeConfirmation, .beforeExecution])
+        #expect(await confirmer.confirmationCount == 1)
+        #expect(await probe.executionCount == 0)
+    }
+
     @Test("Approved confirmation executes the side effect once")
     func approvedConfirmationExecutes() async throws {
+        let authorizer = ScriptedAuthorizer([.allowed, .allowed])
         let confirmer = ApprovingConfirmer()
         let policy = FoundationModelToolExecutionPolicy()
         let result = try await policy.execute(
@@ -204,6 +279,7 @@ struct FoundationModelToolExecutionPolicyTests {
             arguments: .object([:]),
             schema: FoundationModelToolSchema(type: .object),
             effect: .sideEffect(.confirmation),
+            authorizer: authorizer,
             confirmer: confirmer,
             operation: { "saved" }
         )
@@ -213,6 +289,7 @@ struct FoundationModelToolExecutionPolicyTests {
             return
         }
         #expect(output == "saved")
+        #expect(await authorizer.phases() == [.beforeConfirmation, .beforeExecution])
         #expect(await confirmer.confirmationCount == 1)
     }
 
@@ -318,5 +395,29 @@ private actor ApprovingConfirmer: FoundationModelToolExecutionConfirming {
     ) -> Bool {
         confirmationCount += 1
         return true
+    }
+}
+
+private actor ScriptedAuthorizer: FoundationModelToolExecutionAuthorizing {
+    private var decisions: [FoundationModelToolAuthorizationDecision]
+    private var requests: [FoundationModelToolAuthorizationRequest] = []
+
+    init(_ decisions: [FoundationModelToolAuthorizationDecision]) {
+        self.decisions = decisions
+    }
+
+    func authorize(
+        _ request: FoundationModelToolAuthorizationRequest,
+        arguments: FoundationModelToolValue
+    ) -> FoundationModelToolAuthorizationDecision {
+        requests.append(request)
+        guard !decisions.isEmpty else {
+            return .denied(FoundationModelToolAuthorizationDenial(code: "missing_test_decision"))
+        }
+        return decisions.removeFirst()
+    }
+
+    func phases() -> [FoundationModelToolAuthorizationPhase] {
+        requests.map(\.phase)
     }
 }

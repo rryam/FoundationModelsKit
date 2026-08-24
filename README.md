@@ -218,7 +218,7 @@ do {
 
 `FoundationModelToolExecutionPolicy` owns one turn's tool budget. It validates generated JSON before app code runs, detects repeated `(tool, arguments)` calls, and caps calls, repairs, elapsed time, and actual output tokens.
 
-The validator supports required properties, string or numeric enums, integer and number ranges, arrays, `anyOf`, and discriminated unions. Policy decisions return typed `loopDetected`, `invalidArguments`, or `budgetExceeded` results. A side-effecting call must choose app-owned confirmation or a nonempty idempotency key.
+The validator supports required properties, string or numeric enums, integer and number ranges, arrays, `anyOf`, and discriminated unions. Policy decisions return typed `loopDetected`, `invalidArguments`, `budgetExceeded`, `authorizationDenied`, or `confirmationRequired` results. A side-effecting call must choose app-owned confirmation or a nonempty idempotency key.
 
 ```swift
 let policy = FoundationModelToolExecutionPolicy(
@@ -240,6 +240,45 @@ let result = try await policy.execute(
     try await lookup(arguments)
 }
 ```
+
+#### App Authorization and User Confirmation
+
+Platform permission, app authorization, and user confirmation are separate decisions. A system framework may permit access while the current actor, account, resource, or capability scope remains unauthorized. Confirmation approves one proposed side effect; it never grants that underlying authorization.
+
+Pass a `FoundationModelToolExecutionAuthorizing` implementation when a tool needs an app-owned policy check. The implementation can capture current account and resource state without exposing those domain concepts to the model or the package.
+
+```swift
+struct ResourceAuthorizer: FoundationModelToolExecutionAuthorizing {
+    let accessStore: AccessStore
+
+    func authorize(
+        _ request: FoundationModelToolAuthorizationRequest,
+        arguments: FoundationModelToolValue
+    ) async -> FoundationModelToolAuthorizationDecision {
+        guard await accessStore.canExecute(tool: request.toolName, arguments: arguments) else {
+            return .denied(.init(code: "resource_access_denied"))
+        }
+        return .allowed
+    }
+}
+
+let result = try await policy.execute(
+    tool: "update-record",
+    arguments: generatedArguments,
+    schema: toolSchema,
+    effect: .sideEffect(.confirmation),
+    authorizer: ResourceAuthorizer(accessStore: accessStore),
+    confirmer: confirmationProvider
+) {
+    try await updateRecord(generatedArguments)
+}
+```
+
+For a confirmed side effect, the policy checks authorization before presenting confirmation and re-evaluates it immediately before execution. This catches access revoked while confirmation UI is visible. Read-only and idempotent calls are checked immediately before execution. Denials carry an app-defined, non-sensitive code and never run tool code.
+
+The authorizer supervises model-directed execution but does not replace authorization enforcement inside the app service that performs the operation. The service remains authoritative for current access and resource invariants.
+
+Omitting the authorizer preserves existing behavior and means the host app has determined that no additional app-owned authorization gate is required for that call.
 
 ### Typed Tool Result Routing
 

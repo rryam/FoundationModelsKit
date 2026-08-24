@@ -17,8 +17,17 @@ struct ToolCallEventInvocationTests {
             arguments: .object([:]),
             failure: FoundationModelErrorProjection(category: .networkFailure)
         )
+        let authorizationDenial = try await router.record(
+            tool: "contacts",
+            arguments: .object([:]),
+            result: FoundationModelToolExecutionResult<String>.authorizationDenied(
+                FoundationModelToolAuthorizationDenial(code: "access_revoked")
+            ),
+            mapSuccess: { $0 }
+        )
 
         #expect(FoundationModelToolCallEvent(invocation: success).outcome == .succeeded)
         #expect(FoundationModelToolCallEvent(invocation: failure).outcome == .failed)
+        #expect(FoundationModelToolCallEvent(invocation: authorizationDenial).outcome == .rejected)
     }
 }
