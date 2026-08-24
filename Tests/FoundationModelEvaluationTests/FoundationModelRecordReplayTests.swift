@@ -124,6 +124,137 @@ struct FoundationModelRecordReplayTests {
         #expect(decoded == cassette)
     }
 
+    @Test("Replay remains compatible with format 1 text-only cassettes")
+    func replaysFormatOneCassette() async throws {
+        let result = FoundationModelTextGenerationResult(content: "legacy")
+        let cassette = FoundationModelTextGenerationCassette(
+            formatVersion: 1,
+            fingerprint: testFingerprint,
+            records: [
+                FoundationModelTextGenerationRecord(
+                    sequence: 0,
+                    request: request(correlationID: UUID()),
+                    outcome: .success(result)
+                )
+            ]
+        )
+
+        let replay = try FoundationModelReplayTextGenerator(cassette: cassette)
+
+        #expect(try await replay.generateText(
+            for: request(correlationID: UUID())
+        ) == result)
+    }
+
+    @Test("Recorder replaces image paths with metadata and replay matches image content")
+    func redactsAndReplaysImageAttachments() async throws {
+        let recordedURL = try temporaryEvaluationPNG(named: "private-original.png")
+        let replayURL = try temporaryEvaluationPNG(named: "renamed-copy.png")
+        defer {
+            removeTemporaryEvaluationItem(containing: recordedURL)
+            removeTemporaryEvaluationItem(containing: replayURL)
+        }
+        let result = FoundationModelTextGenerationResult(content: "image result")
+        let recorder = FoundationModelRecordingTextGenerator(
+            base: ScriptedTextGenerator(outcomes: [.success(result)])
+        )
+        let recordedRequest = request(
+            correlationID: UUID(),
+            imageAttachments: [
+                FoundationModelImageAttachment(
+                    label: "subject",
+                    imageURL: recordedURL
+                )
+            ]
+        )
+
+        _ = try await recorder.generateText(for: recordedRequest)
+        let cassette = await recorder.cassette(fingerprint: testFingerprint)
+        let encoded = try JSONEncoder().encode(cassette)
+        let json = try #require(String(data: encoded, encoding: .utf8))
+        let recordedAttachment = try #require(
+            cassette.records.first?.request.imageAttachments.first
+        )
+
+        #expect(recordedAttachment.imageURL == nil)
+        #expect(recordedAttachment.descriptor?.sha256Digest.count == 64)
+        #expect(!json.contains(recordedURL.path()))
+        #expect(!json.contains("private-original.png"))
+
+        let replay = try FoundationModelReplayTextGenerator(cassette: cassette)
+        let replayRequest = request(
+            correlationID: UUID(),
+            imageAttachments: [
+                FoundationModelImageAttachment(
+                    label: "subject",
+                    imageURL: replayURL
+                )
+            ]
+        )
+
+        #expect(try await replay.generateText(for: replayRequest) == result)
+    }
+
+    @Test("Replay rejects different image content and malformed recorded metadata")
+    func rejectsMismatchedImageContent() async throws {
+        let imageURL = try temporaryEvaluationPNG(named: "original.png")
+        let differentURL = try temporaryEvaluationFile(
+            named: "different.png",
+            data: try #require(Data(base64Encoded: differentEvaluationPNGBase64))
+        )
+        defer {
+            removeTemporaryEvaluationItem(containing: imageURL)
+            removeTemporaryEvaluationItem(containing: differentURL)
+        }
+        let result = FoundationModelTextGenerationResult(content: "image result")
+        let recorder = FoundationModelRecordingTextGenerator(
+            base: ScriptedTextGenerator(outcomes: [.success(result)])
+        )
+        _ = try await recorder.generateText(for: request(
+            correlationID: UUID(),
+            imageAttachments: [
+                FoundationModelImageAttachment(label: "subject", imageURL: imageURL)
+            ]
+        ))
+        let cassette = await recorder.cassette(fingerprint: testFingerprint)
+        let replay = try FoundationModelReplayTextGenerator(cassette: cassette)
+
+        await #expect(throws: FoundationModelReplayError.self) {
+            _ = try await replay.generateText(for: request(
+                correlationID: UUID(),
+                imageAttachments: [
+                    FoundationModelImageAttachment(label: "subject", imageURL: differentURL)
+                ]
+            ))
+        }
+
+        let malformed = FoundationModelImageAttachment.metadataOnly(
+            FoundationModelImageAttachmentDescriptor(
+                label: "subject",
+                contentTypeIdentifier: "public.png",
+                byteCount: 1,
+                sha256Digest: "not-a-digest"
+            )
+        )
+        let malformedCassette = FoundationModelTextGenerationCassette(
+            fingerprint: testFingerprint,
+            records: [
+                FoundationModelTextGenerationRecord(
+                    sequence: 0,
+                    request: request(
+                        correlationID: UUID(),
+                        imageAttachments: [malformed]
+                    ),
+                    outcome: .success(result)
+                )
+            ]
+        )
+
+        #expect(throws: FoundationModelsKitError.self) {
+            _ = try FoundationModelReplayTextGenerator(cassette: malformedCassette)
+        }
+    }
+
     @Test("Golden comparisons exclude timing and report stable field drift")
     func comparesStableEvaluationFields() {
         let firstTrace = trace(
@@ -160,11 +291,15 @@ struct FoundationModelRecordReplayTests {
         )
     }
 
-    private func request(correlationID: UUID) -> FoundationModelTextGenerationRequest {
+    private func request(
+        correlationID: UUID,
+        imageAttachments: [FoundationModelImageAttachment] = []
+    ) -> FoundationModelTextGenerationRequest {
         FoundationModelTextGenerationRequest(
             prompt: "Prompt",
             systemPrompt: "Instructions",
             generationOptions: FoundationModelGenerationOptions(temperature: 0.2),
+            imageAttachments: imageAttachments,
             context: FoundationModelInvocationContext(
                 source: .automation,
                 localeIdentifier: "en_US",
@@ -204,6 +339,37 @@ struct FoundationModelRecordReplayTests {
             localeIdentifier: "en_US"
         )
     }
+}
+
+private let evaluationPNGBase64 = """
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=
+"""
+
+private let differentEvaluationPNGBase64 = """
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z8i8AAAAASUVORK5CYII=
+"""
+
+private func temporaryEvaluationPNG(named name: String) throws -> URL {
+    try temporaryEvaluationFile(
+        named: name,
+        data: try #require(Data(base64Encoded: evaluationPNGBase64))
+    )
+}
+
+private func temporaryEvaluationFile(named name: String, data: Data) throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "FoundationModelEvaluationTests-\(UUID())", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let url = directory.appending(path: name)
+    try data.write(to: url, options: .atomic)
+    return url
+}
+
+private func removeTemporaryEvaluationItem(containing url: URL) {
+    try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
 }
 
 private actor ScriptedTextGenerator: FoundationModelTextGenerating {
