@@ -93,6 +93,23 @@ struct FoundationModelToolResultRouterTests {
         #expect(await router.routingResult() == .none)
     }
 
+    @Test("Authorization denials remain distinct policy decisions")
+    func recordsAuthorizationDenial() async throws {
+        let router = FoundationModelToolResultRouter<AppOutcome>()
+        let denial = FoundationModelToolAuthorizationDenial(code: "scope_revoked")
+
+        let invocation = try await router.record(
+            tool: "sleep",
+            arguments: .object([:]),
+            result: FoundationModelToolExecutionResult<Int>.authorizationDenied(denial),
+            mapSuccess: { .exercise(minutes: $0) }
+        )
+
+        #expect(invocation.status == .authorizationDenied)
+        #expect(invocation.outcome == nil)
+        #expect(await router.routingResult() == .none)
+    }
+
     @Test("Non-JSON policy rejections retain evidence without raw arguments")
     func recordsNonJSONPolicyRejection() async throws {
         let router = FoundationModelToolResultRouter<AppOutcome>(

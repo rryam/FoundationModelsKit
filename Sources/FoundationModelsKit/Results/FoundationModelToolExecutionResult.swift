@@ -17,6 +17,7 @@ public enum FoundationModelToolExecutionResult<Output: Sendable>: Sendable {
     case loopDetected(FoundationModelToolLoop)
     case invalidArguments([FoundationModelToolArgumentIssue])
     case budgetExceeded(FoundationModelToolBudgetExceeded)
+    case authorizationDenied(FoundationModelToolAuthorizationDenial)
     case confirmationRequired(FoundationModelToolConfirmationRequest)
 }
 

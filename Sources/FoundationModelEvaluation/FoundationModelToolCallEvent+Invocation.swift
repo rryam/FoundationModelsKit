@@ -12,7 +12,8 @@ public extension FoundationModelToolCallEvent {
             eventOutcome = .succeeded
         case .failed:
             eventOutcome = .failed
-        case .loopDetected, .invalidArguments, .budgetExceeded, .confirmationRequired:
+        case .loopDetected, .invalidArguments, .budgetExceeded, .authorizationDenied,
+             .confirmationRequired:
             eventOutcome = .rejected
         }
         self.init(
