@@ -26,7 +26,11 @@ public struct FoundationModelToolConfirmationRequest: Equatable, Sendable {
     }
 }
 
-/// Lets the app present its own confirmation UI and authorization policy.
+/// Lets the app present its own confirmation UI for a specific proposed side effect.
+///
+/// Confirmation records a user decision; it does not grant app authorization. Pass a separate
+/// ``FoundationModelToolExecutionAuthorizing`` implementation to the execution policy when the
+/// tool requires an app-owned authorization check.
 public protocol FoundationModelToolExecutionConfirming: Sendable {
     func confirm(
         _ request: FoundationModelToolConfirmationRequest,

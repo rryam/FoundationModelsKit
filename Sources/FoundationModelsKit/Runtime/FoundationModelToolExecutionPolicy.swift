@@ -63,6 +63,7 @@ public actor FoundationModelToolExecutionPolicy {
         schema: FoundationModelToolSchema,
         attempt: FoundationModelToolExecutionAttempt = .initial,
         effect: FoundationModelToolEffect = .readOnly,
+        authorizer: (any FoundationModelToolExecutionAuthorizing)? = nil,
         confirmer: (any FoundationModelToolExecutionConfirming)? = nil,
         outputTokenEstimator: OutputTokenEstimator<Output>? = nil,
         operation: @escaping @Sendable () async throws -> Output
@@ -110,6 +111,15 @@ public actor FoundationModelToolExecutionPolicy {
         case .readOnly:
             break
         case .sideEffect(.confirmation):
+            if let denial = try await authorizationDenial(
+                for: identity,
+                callFingerprint: callFingerprint,
+                phase: .beforeConfirmation,
+                authorizer: authorizer,
+                arguments: arguments
+            ) {
+                return .authorizationDenied(denial)
+            }
             let request = FoundationModelToolConfirmationRequest(
                 toolName: toolName,
                 callFingerprint: callFingerprint
@@ -141,6 +151,16 @@ public actor FoundationModelToolExecutionPolicy {
                 ])
             }
             reservedIdempotencyKeys[scopedKey] = identity
+        }
+
+        if let denial = try await authorizationDenial(
+            for: identity,
+            callFingerprint: callFingerprint,
+            phase: .beforeExecution,
+            authorizer: authorizer,
+            arguments: arguments
+        ) {
+            return .authorizationDenied(denial)
         }
 
         try Task.checkCancellation()
@@ -181,6 +201,33 @@ public actor FoundationModelToolExecutionPolicy {
         }
 
         return .succeeded(output, usage: usage(), outputTokenCount: outputTokenCount)
+    }
+
+    private func authorizationDenial(
+        for identity: CallIdentity,
+        callFingerprint: String,
+        phase: FoundationModelToolAuthorizationPhase,
+        authorizer: (any FoundationModelToolExecutionAuthorizing)?,
+        arguments: FoundationModelToolValue
+    ) async throws -> FoundationModelToolAuthorizationDenial? {
+        guard let authorizer else {
+            return nil
+        }
+
+        let request = FoundationModelToolAuthorizationRequest(
+            toolName: identity.toolName,
+            callFingerprint: callFingerprint,
+            phase: phase
+        )
+        let decision = await authorizer.authorize(request, arguments: arguments)
+        try Task.checkCancellation()
+
+        switch decision {
+        case .allowed:
+            return nil
+        case .denied(let denial):
+            return denial
+        }
     }
 
     private func releasePendingConfirmation(

@@ -66,6 +66,14 @@ public actor FoundationModelToolResultRouter<Outcome: Sendable> {
                 status: .budgetExceeded,
                 recordedAt: recordedAt
             )
+        case .authorizationDenied:
+            return try appendPolicyDecision(
+                toolName: toolName,
+                arguments: arguments,
+                identifier: identifier,
+                status: .authorizationDenied,
+                recordedAt: recordedAt
+            )
         case .confirmationRequired:
             return try appendPolicyDecision(
                 toolName: toolName,
