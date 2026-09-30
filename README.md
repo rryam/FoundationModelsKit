@@ -283,17 +283,20 @@ struct ResourceAuthorizer: FoundationModelToolExecutionAuthorizing {
 
 let result = try await policy.execute(
     tool: "update-record",
-    arguments: generatedArguments,
+    arguments: arguments,
     schema: toolSchema,
     effect: .sideEffect(.confirmation),
     authorizer: ResourceAuthorizer(accessStore: accessStore),
-    confirmer: confirmationProvider
+    confirmer: confirmationProvider,
+    outputTokenEstimator: estimateOutputTokens
 ) {
-    try await updateRecord(generatedArguments)
+    try await updateRecord(arguments)
 }
 ```
 
 For a confirmed side effect, the policy checks authorization before presenting confirmation and re-evaluates it immediately before execution. This catches access revoked while confirmation UI is visible. Read-only and idempotent calls are checked immediately before execution. Denials carry an app-defined, non-sensitive code and never run tool code.
+
+A denied call is final for that policy: it still counts toward the call budget and loop detection, so re-submitting the same tool and arguments returns `loopDetected`. A denied idempotent call releases its key, so a corrected call can reuse it. The policy awaits the authorizer without applying `maxDuration`; bound its latency in the implementation and deny on timeout.
 
 The authorizer supervises model-directed execution but does not replace authorization enforcement inside the app service that performs the operation. The service remains authoritative for current access and resource invariants.
 
