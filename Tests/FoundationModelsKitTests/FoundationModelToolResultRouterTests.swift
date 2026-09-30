@@ -106,6 +106,7 @@ struct FoundationModelToolResultRouterTests {
         )
 
         #expect(invocation.status == .authorizationDenied)
+        #expect(invocation.status.rawValue == "authorization_denied")
         #expect(invocation.outcome == nil)
         #expect(await router.routingResult() == .none)
     }

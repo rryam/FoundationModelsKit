@@ -170,7 +170,9 @@ struct FoundationModelRecordReplayTests {
 
         _ = try await recorder.generateText(for: recordedRequest)
         let cassette = await recorder.cassette(fingerprint: testFingerprint)
-        let encoded = try JSONEncoder().encode(cassette)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let encoded = try encoder.encode(cassette)
         let json = try #require(String(data: encoded, encoding: .utf8))
         let recordedAttachment = try #require(
             cassette.records.first?.request.imageAttachments.first
@@ -179,6 +181,7 @@ struct FoundationModelRecordReplayTests {
         #expect(recordedAttachment.imageURL == nil)
         #expect(recordedAttachment.descriptor?.sha256Digest.count == 64)
         #expect(!json.contains(recordedURL.path()))
+        #expect(!json.contains(recordedURL.deletingLastPathComponent().lastPathComponent))
         #expect(!json.contains("private-original.png"))
 
         let replay = try FoundationModelReplayTextGenerator(cassette: cassette)
@@ -193,6 +196,34 @@ struct FoundationModelRecordReplayTests {
         )
 
         #expect(try await replay.generateText(for: replayRequest) == result)
+    }
+
+    @Test("Replay loads image recordings under a smaller byte budget")
+    func replaysImageRecordingsUnderSmallerPolicy() async throws {
+        let imageURL = try temporaryEvaluationPNG(named: "original.png")
+        defer { removeTemporaryEvaluationItem(containing: imageURL) }
+        let result = FoundationModelTextGenerationResult(content: "image result")
+        let recorder = FoundationModelRecordingTextGenerator(
+            base: ScriptedTextGenerator(outcomes: [.success(result)])
+        )
+        _ = try await recorder.generateText(for: request(
+            correlationID: UUID(),
+            imageAttachments: [
+                FoundationModelImageAttachment(label: "subject", imageURL: imageURL)
+            ]
+        ))
+        let cassette = await recorder.cassette(fingerprint: testFingerprint)
+        let recordedAttachments = try #require(cassette.records.first?.request.imageAttachments)
+
+        let replay = try FoundationModelReplayTextGenerator(
+            cassette: cassette,
+            imageAttachmentPolicy: FoundationModelImageAttachmentPolicy(maximumBytesPerAttachment: 1)
+        )
+
+        #expect(try await replay.generateText(for: request(
+            correlationID: UUID(),
+            imageAttachments: recordedAttachments
+        )) == result)
     }
 
     @Test("Replay rejects different image content and malformed recorded metadata")

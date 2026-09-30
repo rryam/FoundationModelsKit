@@ -2,7 +2,8 @@ import Foundation
 
 /// App-owned protection for a tool that may cause external side effects.
 public enum FoundationModelToolSideEffectProtection: Equatable, Sendable {
-    /// Ask the app for confirmation immediately before executing the tool.
+    /// Ask the app for confirmation before executing the tool. Authorization, when supplied, is
+    /// checked before confirmation and again after it.
     case confirmation
 
     /// Reserve an app-defined key before execution so the turn cannot reuse it with different arguments.

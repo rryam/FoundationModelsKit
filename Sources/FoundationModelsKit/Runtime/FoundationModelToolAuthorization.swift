@@ -12,7 +12,9 @@ public enum FoundationModelToolAuthorizationPhase: String, Codable, Equatable, S
 /// A privacy-safe request for an app-owned authorization decision.
 ///
 /// Generated arguments are delivered separately to the authorizer so apps can avoid retaining
-/// sensitive values in authorization logs.
+/// sensitive values in authorization logs. `callFingerprint` is a deterministic, unsalted hash of
+/// the tool name and canonical arguments: use it to correlate the phases of one call, not as
+/// anonymized data or as an authorization cache key.
 public struct FoundationModelToolAuthorizationRequest: Equatable, Sendable {
     public let toolName: String
     public let callFingerprint: String
@@ -51,6 +53,9 @@ public enum FoundationModelToolAuthorizationDecision: Equatable, Sendable {
 /// capture app-specific actor, capability, resource, and revocation state without exposing those
 /// domain concepts to the model or this package. This hook supervises model-directed execution; it
 /// does not replace authorization enforcement inside the app service that performs the operation.
+///
+/// The policy awaits `authorize` without applying its duration budget. Implementations should bound
+/// their own latency and return `.denied` when a decision cannot be reached in time.
 public protocol FoundationModelToolExecutionAuthorizing: Sendable {
     func authorize(
         _ request: FoundationModelToolAuthorizationRequest,

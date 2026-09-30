@@ -273,16 +273,20 @@ struct FoundationModelToolExecutionPolicyTests {
     func approvedConfirmationExecutes() async throws {
         let authorizer = ScriptedAuthorizer([.allowed, .allowed])
         let confirmer = ApprovingConfirmer()
+        let probe = ToolOperationProbe()
         let policy = FoundationModelToolExecutionPolicy()
+        let arguments = FoundationModelToolValue.object(["id": .number(7)])
         let result = try await policy.execute(
             tool: "save",
-            arguments: .object([:]),
-            schema: FoundationModelToolSchema(type: .object),
+            arguments: arguments,
+            schema: FoundationModelToolSchema(type: .object, additionalProperties: true),
             effect: .sideEffect(.confirmation),
             authorizer: authorizer,
-            confirmer: confirmer,
-            operation: { "saved" }
-        )
+            confirmer: confirmer
+        ) {
+            await probe.recordExecution()
+            return "saved"
+        }
 
         guard case .succeeded(let output, _, _) = result else {
             Issue.record("Expected confirmed side effect to execute")
@@ -291,6 +295,14 @@ struct FoundationModelToolExecutionPolicyTests {
         #expect(output == "saved")
         #expect(await authorizer.phases() == [.beforeConfirmation, .beforeExecution])
         #expect(await confirmer.confirmationCount == 1)
+        #expect(await probe.executionCount == 1)
+
+        let requests = await authorizer.recordedRequests()
+        #expect(requests.map(\.toolName) == ["save", "save"])
+        #expect(Set(requests.map(\.callFingerprint)).count == 1)
+        let confirmationRequest = await confirmer.lastRequest
+        #expect(requests.first?.callFingerprint == confirmationRequest?.callFingerprint)
+        #expect(await authorizer.recordedArguments() == [arguments, arguments])
     }
 
     @Test("A call awaiting confirmation can be retried after approval")
@@ -369,6 +381,126 @@ struct FoundationModelToolExecutionPolicyTests {
         #expect(issues.first?.code == .idempotencyKeyConflict)
     }
 
+    @Test("An authorized idempotent call executes once and keeps its key reserved")
+    func authorizedIdempotentCallExecutes() async throws {
+        let authorizer = ScriptedAuthorizer([.allowed])
+        let probe = ToolOperationProbe()
+        let policy = FoundationModelToolExecutionPolicy()
+        let schema = FoundationModelToolSchema(type: .object, additionalProperties: true)
+
+        let result = try await policy.execute(
+            tool: "create",
+            arguments: .object(["value": .string("first")]),
+            schema: schema,
+            effect: .sideEffect(.idempotency(key: "request-1")),
+            authorizer: authorizer
+        ) {
+            await probe.recordExecution()
+            return true
+        }
+        let conflict = try await policy.execute(
+            tool: "create",
+            arguments: .object(["value": .string("second")]),
+            schema: schema,
+            effect: .sideEffect(.idempotency(key: "request-1")),
+            authorizer: authorizer
+        ) {
+            await probe.recordExecution()
+            return true
+        }
+
+        guard case .succeeded = result, case .invalidArguments(let issues) = conflict else {
+            Issue.record("Expected one execution followed by an idempotency key conflict")
+            return
+        }
+        #expect(issues.first?.code == .idempotencyKeyConflict)
+        #expect(await authorizer.phases() == [.beforeExecution])
+        #expect(await probe.executionCount == 1)
+    }
+
+    @Test("A denied idempotent call releases its key for a corrected call")
+    func deniedIdempotentCallReleasesKey() async throws {
+        let denial = FoundationModelToolAuthorizationDenial(code: "resource_access_denied")
+        let authorizer = ScriptedAuthorizer([.denied(denial), .allowed])
+        let probe = ToolOperationProbe()
+        let policy = FoundationModelToolExecutionPolicy()
+        let schema = FoundationModelToolSchema(type: .object, additionalProperties: true)
+
+        let denied = try await policy.execute(
+            tool: "create",
+            arguments: .object(["value": .string("first")]),
+            schema: schema,
+            effect: .sideEffect(.idempotency(key: "request-1")),
+            authorizer: authorizer
+        ) {
+            await probe.recordExecution()
+            return true
+        }
+        let corrected = try await policy.execute(
+            tool: "create",
+            arguments: .object(["value": .string("second")]),
+            schema: schema,
+            attempt: .repair,
+            effect: .sideEffect(.idempotency(key: "request-1")),
+            authorizer: authorizer
+        ) {
+            await probe.recordExecution()
+            return true
+        }
+
+        #expect(denied == .authorizationDenied(denial))
+        guard case .succeeded = corrected else {
+            Issue.record("Expected the corrected call to reuse the released key")
+            return
+        }
+        #expect(await authorizer.phases() == [.beforeExecution, .beforeExecution])
+        #expect(await probe.executionCount == 1)
+    }
+
+    @Test("A denied call stays counted and cannot be retried in the same turn")
+    func deniedCallIsFinalForTheTurn() async throws {
+        let denial = FoundationModelToolAuthorizationDenial(code: "session_locked")
+        let authorizer = ScriptedAuthorizer([.denied(denial), .allowed])
+        let probe = ToolOperationProbe()
+        let policy = FoundationModelToolExecutionPolicy()
+        let schema = FoundationModelToolSchema(type: .object)
+
+        let denied = try await policy.execute(
+            tool: "read",
+            arguments: .object([:]),
+            schema: schema,
+            authorizer: authorizer
+        ) {
+            await probe.recordExecution()
+            return 1
+        }
+        #expect(denied == .authorizationDenied(denial))
+        #expect(await policy.usage().callCount == 1)
+
+        let retry = try await policy.execute(
+            tool: "read",
+            arguments: .object([:]),
+            schema: schema,
+            authorizer: authorizer
+        ) {
+            await probe.recordExecution()
+            return 1
+        }
+        guard case .loopDetected = retry else {
+            Issue.record("Expected the identical retry to be reported as a loop")
+            return
+        }
+        #expect(await authorizer.phases() == [.beforeExecution])
+        #expect(await probe.executionCount == 0)
+    }
+
+    @Test("Authorization denial codes are trimmed and never empty")
+    func normalizesDenialCode() {
+        #expect(FoundationModelToolAuthorizationDenial().code == "denied")
+        #expect(FoundationModelToolAuthorizationDenial(code: " \n").code == "denied")
+        #expect(FoundationModelToolAuthorizationDenial(code: " scope_revoked ").code == "scope_revoked")
+    }
+
     private var stringObjectSchema: FoundationModelToolSchema {
         FoundationModelToolSchema(
             type: .object,
@@ -388,12 +520,14 @@ private actor ToolOperationProbe {
 
 private actor ApprovingConfirmer: FoundationModelToolExecutionConfirming {
     private(set) var confirmationCount = 0
+    private(set) var lastRequest: FoundationModelToolConfirmationRequest?
 
     func confirm(
         _ request: FoundationModelToolConfirmationRequest,
         arguments: FoundationModelToolValue
     ) -> Bool {
         confirmationCount += 1
+        lastRequest = request
         return true
     }
 }
@@ -401,6 +535,7 @@ private actor ApprovingConfirmer: FoundationModelToolExecutionConfirming {
 private actor ScriptedAuthorizer: FoundationModelToolExecutionAuthorizing {
     private var decisions: [FoundationModelToolAuthorizationDecision]
     private var requests: [FoundationModelToolAuthorizationRequest] = []
+    private var arguments: [FoundationModelToolValue] = []
 
     init(_ decisions: [FoundationModelToolAuthorizationDecision]) {
         self.decisions = decisions
@@ -411,6 +546,7 @@ private actor ScriptedAuthorizer: FoundationModelToolExecutionAuthorizing {
         arguments: FoundationModelToolValue
     ) -> FoundationModelToolAuthorizationDecision {
         requests.append(request)
+        self.arguments.append(arguments)
         guard !decisions.isEmpty else {
             return .denied(FoundationModelToolAuthorizationDenial(code: "missing_test_decision"))
         }
@@ -419,5 +555,13 @@ private actor ScriptedAuthorizer: FoundationModelToolExecutionAuthorizing {
 
     func phases() -> [FoundationModelToolAuthorizationPhase] {
         requests.map(\.phase)
+    }
+
+    func recordedRequests() -> [FoundationModelToolAuthorizationRequest] {
+        requests
+    }
+
+    func recordedArguments() -> [FoundationModelToolValue] {
+        arguments
     }
 }

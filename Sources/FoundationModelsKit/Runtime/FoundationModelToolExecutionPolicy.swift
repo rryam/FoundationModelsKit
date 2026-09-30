@@ -107,6 +107,7 @@ public actor FoundationModelToolExecutionPolicy {
             return .budgetExceeded(.outputTokenEstimatorRequired(limit: maxOutputTokens))
         }
 
+        var reservedIdempotencyKey: String?
         switch effect {
         case .readOnly:
             break
@@ -151,6 +152,7 @@ public actor FoundationModelToolExecutionPolicy {
                 ])
             }
             reservedIdempotencyKeys[scopedKey] = identity
+            reservedIdempotencyKey = scopedKey
         }
 
         if let denial = try await authorizationDenial(
@@ -160,6 +162,10 @@ public actor FoundationModelToolExecutionPolicy {
             authorizer: authorizer,
             arguments: arguments
         ) {
+            // Nothing ran under the key, so a corrected call may reuse it.
+            if let reservedIdempotencyKey {
+                reservedIdempotencyKeys[reservedIdempotencyKey] = nil
+            }
             return .authorizationDenied(denial)
         }
 

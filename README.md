@@ -283,17 +283,20 @@ struct ResourceAuthorizer: FoundationModelToolExecutionAuthorizing {
 
 let result = try await policy.execute(
     tool: "update-record",
-    arguments: generatedArguments,
+    arguments: arguments,
     schema: toolSchema,
     effect: .sideEffect(.confirmation),
     authorizer: ResourceAuthorizer(accessStore: accessStore),
-    confirmer: confirmationProvider
+    confirmer: confirmationProvider,
+    outputTokenEstimator: estimateOutputTokens
 ) {
-    try await updateRecord(generatedArguments)
+    try await updateRecord(arguments)
 }
 ```
 
 For a confirmed side effect, the policy checks authorization before presenting confirmation and re-evaluates it immediately before execution. This catches access revoked while confirmation UI is visible. Read-only and idempotent calls are checked immediately before execution. Denials carry an app-defined, non-sensitive code and never run tool code.
+
+A denied call is final for that policy: it still counts toward the call budget and loop detection, so re-submitting the same tool and arguments returns `loopDetected`. A denied idempotent call releases its key, so a corrected call can reuse it. The policy awaits the authorizer without applying `maxDuration`; bound its latency in the implementation and deny on timeout.
 
 The authorizer supervises model-directed execution but does not replace authorization enforcement inside the app service that performs the operation. The service remains authoritative for current access and resource invariants.
 
@@ -345,9 +348,9 @@ let replay = try FoundationModelReplayTextGenerator(cassette: cassette)
 let deterministicResult = try await replay.generateText(for: request)
 ```
 
-Cassette format 2 contains complete prompts, instructions, adapter URLs, and responses while remaining able to replay format 1 text-only fixtures. Creating or exporting one is an explicit app decision. Image attachments are the exception: `FoundationModelRecordingTextGenerator` validates each file and records only its label, orientation, Image I/O type, byte count, and SHA-256 digest. It never copies image pixels or local file URLs into a cassette. Replay matches the digest, so identical content can move to a different path. A content digest can still identify predictable or previously known material; treat it as pseudonymous metadata rather than anonymization.
+Cassette format 2 contains complete prompts, instructions, adapter URLs, and responses while remaining able to replay format 1 text-only fixtures. Creating or exporting one is an explicit app decision. Image attachments are the exception: `FoundationModelRecordingTextGenerator` validates each file and records only its label, orientation, Image I/O type, byte count, and SHA-256 digest. It never copies image pixels or local file URLs into a cassette. Replay matches the digest, so identical content can move to a different path, but replay still reads each file-backed attachment in the incoming request; to replay without the file, pass `FoundationModelImageAttachment.metadataOnly(_:)` with the recorded descriptor. The recorder fingerprints each file before forwarding the request and the model reads it later, so files must not change while a request is in flight. Labels are sent to the model and stored verbatim, so don't derive them from file names or user data. A content digest can still identify predictable or previously known material; treat it as pseudonymous metadata rather than anonymization.
 
-Directly encoding `FoundationModelTextGenerationRequest` preserves executable image file URLs. Use the recording wrapper when exporting fixtures, and apply the same review and storage policy to prompt and response text. `FoundationModelEvaluationSnapshot` removes run IDs, dates, and latency so checked-in golden comparisons report drift only in stable evaluation fields.
+Directly encoding `FoundationModelTextGenerationRequest`, or a record or cassette built from one, preserves executable image file URLs. Use the recording wrapper when exporting fixtures, and apply the same review and storage policy to prompt and response text. `FoundationModelEvaluationSnapshot` removes run IDs, dates, and latency so checked-in golden comparisons report drift only in stable evaluation fields.
 
 ### Tools
 

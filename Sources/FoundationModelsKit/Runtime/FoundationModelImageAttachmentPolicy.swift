@@ -14,7 +14,7 @@ public struct FoundationModelImageAttachmentPolicy: Hashable, Sendable {
         maximumAttachmentCount: Int = 8,
         maximumBytesPerAttachment: Int = 20 * 1_024 * 1_024
     ) {
-        self.maximumAttachmentCount = max(1, maximumAttachmentCount)
+        self.maximumAttachmentCount = max(0, maximumAttachmentCount)
         self.maximumBytesPerAttachment = max(1, maximumBytesPerAttachment)
     }
 }
