@@ -51,7 +51,19 @@ public struct FoundationModelsTextGenerator: FoundationModelTextGenerating {
             responseContent = try await session.respond(to: responsePrompt).content
         }
 
-        let tokenCount = await session.transcript.tokenCount(using: model)
+        let tokenCount: Int
+        #if compiler(>=6.4)
+        if !request.imageAttachments.isEmpty,
+           #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {
+            // Transcript tokenization rejects image segments, so report the observed usage.
+            let usage = session.usage
+            tokenCount = usage.input.totalTokenCount + usage.output.totalTokenCount
+        } else {
+            tokenCount = await session.transcript.tokenCount(using: model)
+        }
+        #else
+        tokenCount = await session.transcript.tokenCount(using: model)
+        #endif
 
         return FoundationModelTextGenerationResult(
             content: responseContent,
@@ -72,7 +84,7 @@ public struct FoundationModelsTextGenerator: FoundationModelTextGenerating {
         }
 
         #if compiler(>=6.4)
-        guard #available(iOS 27.0, macOS 27.0, *) else {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else {
             throw FoundationModelsKitError.unavailableCapability(
                 "Image prompting requires iOS 27 or macOS 27"
             )
@@ -105,7 +117,7 @@ public struct FoundationModelsTextGenerator: FoundationModelTextGenerating {
 import ImageIO
 
 extension FoundationModelImageAttachment.Orientation {
-    @available(iOS 27.0, macOS 27.0, *)
+    @available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *)
     fileprivate var foundationModelsValue: CGImagePropertyOrientation {
         switch self {
         case .up: .up

@@ -82,9 +82,12 @@ public struct FoundationModelImageAttachmentInspector: Sendable {
             )
         }
 
+        // Inspect the link target, and drop values cached by an earlier inspection of this URL.
+        var fileURL = imageURL.resolvingSymlinksInPath()
+        fileURL.removeAllCachedResourceValues()
         let values: URLResourceValues
         do {
-            values = try imageURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            values = try fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
         } catch {
             throw FoundationModelsKitError.invalidRequest(
                 "Image attachment '\(attachment.label)' cannot be inspected"
@@ -124,7 +127,6 @@ public struct FoundationModelImageAttachmentInspector: Sendable {
               descriptor.orientation == attachment.orientation,
               !descriptor.contentTypeIdentifier.isEmpty,
               descriptor.byteCount > 0,
-              descriptor.byteCount <= policy.maximumBytesPerAttachment,
               descriptor.sha256Digest.count == 64,
               descriptor.sha256Digest.unicodeScalars.allSatisfy(digestCharacters.contains) else {
             throw FoundationModelsKitError.invalidRequest(
@@ -167,9 +169,14 @@ public struct FoundationModelImageAttachmentInspector: Sendable {
 
         var hasher = SHA256()
         do {
-            while let chunk = try fileHandle.read(upToCount: 64 * 1_024), !chunk.isEmpty {
+            // Drain each autoreleased chunk so hashing never holds the whole file in memory.
+            while try autoreleasepool(invoking: {
+                guard let chunk = try fileHandle.read(upToCount: 64 * 1_024), !chunk.isEmpty else {
+                    return false
+                }
                 hasher.update(data: chunk)
-            }
+                return true
+            }) {}
         } catch {
             throw FoundationModelsKitError.invalidRequest(
                 "Image attachment '\(label)' could not be fingerprinted"
