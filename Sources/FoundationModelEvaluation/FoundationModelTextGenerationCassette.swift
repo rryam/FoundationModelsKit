@@ -2,7 +2,8 @@ import Foundation
 
 /// Codable text-generation recordings paired with the runtime where they were captured.
 public struct FoundationModelTextGenerationCassette: Codable, Equatable, Sendable {
-    public static let currentFormatVersion = 1
+    public static let currentFormatVersion = 2
+    static let supportedFormatVersions = 1...currentFormatVersion
 
     public let formatVersion: Int
     public let fingerprint: FoundationModelRuntimeFingerprint

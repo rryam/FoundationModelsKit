@@ -10,16 +10,23 @@ public actor FoundationModelReplayTextGenerator: FoundationModelTextGenerating {
         let guardrails: FoundationModelGuardrails?
         let adapterURL: URL?
         let generationOptions: FoundationModelGenerationOptions?
+        let imageAttachments: [FoundationModelImageAttachmentDescriptor]
         let source: FoundationModelInvocationSource
         let localeIdentifier: String?
 
-        init(request: FoundationModelTextGenerationRequest) {
+        init(
+            request: FoundationModelTextGenerationRequest,
+            imageAttachmentInspector: FoundationModelImageAttachmentInspector
+        ) throws {
             self.prompt = request.prompt
             self.systemPrompt = request.systemPrompt
             self.modelUseCase = request.modelUseCase
             self.guardrails = request.guardrails
             self.adapterURL = request.adapterURL
             self.generationOptions = request.generationOptions
+            self.imageAttachments = try imageAttachmentInspector.descriptors(
+                for: request.imageAttachments
+            )
             self.source = request.context.source
             self.localeIdentifier = request.context.localeIdentifier
         }
@@ -28,15 +35,31 @@ public actor FoundationModelReplayTextGenerator: FoundationModelTextGenerating {
     public nonisolated let fingerprint: FoundationModelRuntimeFingerprint
 
     private let recordsByKey: [RequestKey: [FoundationModelTextGenerationRecord]]
+    private let imageAttachmentInspector: FoundationModelImageAttachmentInspector
     private var consumedCounts: [RequestKey: Int] = [:]
 
     public init(cassette: FoundationModelTextGenerationCassette) throws {
-        guard cassette.formatVersion == FoundationModelTextGenerationCassette.currentFormatVersion else {
+        try self.init(
+            cassette: cassette,
+            imageAttachmentPolicy: .default
+        )
+    }
+
+    public init(
+        cassette: FoundationModelTextGenerationCassette,
+        imageAttachmentPolicy: FoundationModelImageAttachmentPolicy
+    ) throws {
+        guard FoundationModelTextGenerationCassette.supportedFormatVersions.contains(
+            cassette.formatVersion
+        ) else {
             throw FoundationModelReplayError.unsupportedFormatVersion(cassette.formatVersion)
         }
 
         var seenSequences: Set<Int> = []
         var recordsByKey: [RequestKey: [FoundationModelTextGenerationRecord]] = [:]
+        let imageAttachmentInspector = FoundationModelImageAttachmentInspector(
+            policy: imageAttachmentPolicy
+        )
         for record in cassette.records.sorted(by: { $0.sequence < $1.sequence }) {
             guard record.sequence >= 0 else {
                 throw FoundationModelReplayError.invalidSequence(record.sequence)
@@ -44,17 +67,25 @@ public actor FoundationModelReplayTextGenerator: FoundationModelTextGenerating {
             guard seenSequences.insert(record.sequence).inserted else {
                 throw FoundationModelReplayError.duplicateSequence(record.sequence)
             }
-            recordsByKey[RequestKey(request: record.request), default: []].append(record)
+            let key = try RequestKey(
+                request: record.request,
+                imageAttachmentInspector: imageAttachmentInspector
+            )
+            recordsByKey[key, default: []].append(record)
         }
 
         self.fingerprint = cassette.fingerprint
         self.recordsByKey = recordsByKey
+        self.imageAttachmentInspector = imageAttachmentInspector
     }
 
     public func generateText(
         for request: FoundationModelTextGenerationRequest
     ) async throws -> FoundationModelTextGenerationResult {
-        let key = RequestKey(request: request)
+        let key = try RequestKey(
+            request: request,
+            imageAttachmentInspector: imageAttachmentInspector
+        )
         let fingerprint = try Self.fingerprint(key)
         guard let records = recordsByKey[key] else {
             throw FoundationModelReplayError.noMatchingRecording(
