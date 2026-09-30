@@ -440,8 +440,13 @@ public struct LocationTool: Tool {
       )
     }
 
-    #if os(iOS) || os(visionOS)
+    #if os(iOS)
       if status == .authorizedAlways || status == .authorizedWhenInUse {
+        return AuthorizationResult(status: status, isAuthorized: true, result: nil)
+      }
+    #elseif os(visionOS)
+      // visionOS grants only when-in-use access; authorizedAlways is unavailable there.
+      if status == .authorizedWhenInUse {
         return AuthorizationResult(status: status, isAuthorized: true, result: nil)
       }
     #elseif os(macOS)
