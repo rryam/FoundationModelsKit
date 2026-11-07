@@ -14,6 +14,8 @@ import FoundationModelsKit
 ///
 /// Use `ContactsTool` to search, read, and create contacts.
 /// It integrates with the system Contacts app and requires appropriate permissions.
+/// Creating a contact requires an app-owned confirmation; without one, `create` throws
+/// ``ToolMutationExecutionError`` and nothing is written.
 ///
 /// The following actions are supported:
 /// - `search`: Search contacts by name, email, or phone number
@@ -21,7 +23,7 @@ import FoundationModelsKit
 /// - `create`: Create a new contact with provided information
 ///
 /// ```swift
-/// let session = LanguageModelSession(tools: [ContactsTool()])
+/// let session = LanguageModelSession(tools: [ContactsTool(confirmation: confirmer)])
 /// let response = try await session.respond(to: "Find John's phone number")
 /// ```
 ///
@@ -32,7 +34,7 @@ public struct ContactsTool: Tool {
     /// The name of the tool, used for identification.
     public let name = "manageContacts"
     /// A brief description of the tool's functionality.
-    public let description = "Search, read, and create contacts from the Contacts app"
+    public let description = "Search and read contacts, or create a contact after host-app confirmation"
 
     /// Arguments for contact operations.
     @Generable
@@ -91,26 +93,68 @@ public struct ContactsTool: Tool {
     }
 
     private let store = CNContactStore()
+    private let executor: ToolMutationExecutor?
 
-    public init() {}
+    /// Creates a contacts tool that can search and read; `create` fails closed.
+    public init() {
+        self.executor = nil
+    }
+
+    /// Creates a contacts tool whose `create` action runs only after `confirmation` approves it.
+    public init(confirmation: any ToolMutationConfirming) {
+        self.executor = ToolMutationExecutor(confirmer: confirmation)
+    }
 
     public func call(arguments: Arguments) async throws -> GeneratedContent {
-        // Request access if needed
+        let action = arguments.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if action == "create" {
+            return try await confirmAndCreate(ContactDraft(arguments))
+        }
+
         let authorized = await requestAccess()
         guard authorized else {
             return createErrorOutput(error: ContactsError.accessDenied)
         }
 
-        switch arguments.action.lowercased() {
+        switch action {
         case "search":
             return try searchContacts(query: arguments.name)
         case "read":
             return try readContact(contactId: arguments.contactId)
-        case "create":
-            return try createContact(arguments: arguments)
         default:
             return createErrorOutput(error: ContactsError.invalidAction)
         }
+    }
+
+    private func confirmAndCreate(_ draft: ContactDraft) async throws -> GeneratedContent {
+        guard !draft.firstName.isEmpty else {
+            return createErrorOutput(error: ContactsError.missingName)
+        }
+
+        let request = ToolMutationRequest(
+            toolName: name,
+            action: "create",
+            summary: "Create contact '\(draft.fullName)'",
+            details: draft.details
+        )
+        guard let executor else {
+            throw ToolMutationExecutionError.confirmationRequired(for: request)
+        }
+
+        return try await executor.execute(
+            request,
+            resourceID: { content in try? content.value(String.self, forProperty: "contactId") },
+            operation: {
+                guard await requestAccess() else {
+                    throw ToolMutationOperationError(
+                        failureDescription: ContactsError.accessDenied.localizedDescription,
+                        commitState: .notAttempted
+                    )
+                }
+                return try createContact(draft)
+            }
+        )
+        .value
     }
 
     private func requestAccess() async -> Bool {
@@ -216,31 +260,27 @@ public struct ContactsTool: Tool {
         }
     }
 
-    private func createContact(arguments: Arguments) throws -> GeneratedContent {
-        guard let firstName = arguments.firstName, !firstName.isEmpty else {
-            return createErrorOutput(error: ContactsError.missingName)
-        }
-
+    private func createContact(_ draft: ContactDraft) throws -> GeneratedContent {
         let newContact = CNMutableContact()
-        newContact.givenName = firstName
+        newContact.givenName = draft.firstName
 
-        if let lastName = arguments.lastName {
+        if let lastName = draft.lastName {
             newContact.familyName = lastName
         }
 
-        if let email = arguments.email {
+        if let email = draft.email {
             newContact.emailAddresses = [
                 CNLabeledValue(label: CNLabelHome, value: NSString(string: email))
             ]
         }
 
-        if let phone = arguments.phoneNumber {
+        if let phone = draft.phoneNumber {
             newContact.phoneNumbers = [
                 CNLabeledValue(label: CNLabelPhoneNumberMobile, value: CNPhoneNumber(stringValue: phone))
             ]
         }
 
-        if let org = arguments.organization {
+        if let org = draft.organization {
             newContact.organizationName = org
         }
 
@@ -249,23 +289,25 @@ public struct ContactsTool: Tool {
 
         do {
             try store.execute(saveRequest)
-
-            return GeneratedContent(properties: [
-                "status": "success",
-                "message": "Contact created successfully",
-                "contactId": newContact.identifier,
-                "givenName": newContact.givenName,
-                "familyName": newContact.familyName,
-                "fullName": "\(newContact.givenName) \(newContact.familyName)".trimmingCharacters(
-                    in: .whitespaces),
-                "email": arguments.email ?? "",
-                "phoneNumber": arguments.phoneNumber ?? "",
-                "organization": arguments.organization ?? ""
-            ])
-
         } catch {
-            return createErrorOutput(error: error)
+            throw ToolMutationOperationError(
+                failureDescription: error.localizedDescription,
+                commitState: .notCommitted
+            )
         }
+
+        return GeneratedContent(properties: [
+            "status": "success",
+            "message": "Contact created successfully",
+            "contactId": newContact.identifier,
+            "givenName": newContact.givenName,
+            "familyName": newContact.familyName,
+            "fullName": "\(newContact.givenName) \(newContact.familyName)".trimmingCharacters(
+                in: .whitespaces),
+            "email": draft.email ?? "",
+            "phoneNumber": draft.phoneNumber ?? "",
+            "organization": draft.organization ?? ""
+        ])
     }
 
     private func formatContactsOutput(contacts: [ContactSearchResult], query: String) -> GeneratedContent {
@@ -291,6 +333,39 @@ public struct ContactsTool: Tool {
             "error": error.localizedDescription,
             "message": "Failed to perform contact operation"
         ])
+    }
+}
+
+struct ContactDraft: Sendable {
+    let firstName: String
+    let lastName: String?
+    let phoneNumber: String?
+    let email: String?
+    let organization: String?
+
+    init(_ arguments: ContactsTool.Arguments) {
+        self.firstName = arguments.firstName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.lastName = arguments.lastName
+        self.phoneNumber = arguments.phoneNumber
+        self.email = arguments.email
+        self.organization = arguments.organization
+    }
+
+    var fullName: String {
+        [firstName, lastName ?? ""].joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    }
+
+    var details: [ToolMutationDetail] {
+        [
+            ("First Name", firstName),
+            ("Last Name", lastName),
+            ("Phone", phoneNumber),
+            ("Email", email),
+            ("Organization", organization)
+        ].compactMap { label, value in
+            guard let value, !value.isEmpty else { return nil }
+            return ToolMutationDetail(label: label, value: value)
+        }
     }
 }
 

@@ -166,6 +166,29 @@ struct ToolMutationSafetyTests {
     }
   }
 
+  @Test("Contact creation fails closed without approval")
+  func contactCreationRequiresConfirmation() async throws {
+    let arguments = ContactsTool.Arguments(action: " Create ", firstName: "Alex")
+
+    do {
+      _ = try await ContactsTool().call(arguments: arguments)
+      Issue.record("Expected explicit confirmation to be required")
+    } catch let error as ToolMutationExecutionError {
+      #expect(error.receipt.status == .confirmationRequired)
+      #expect(error.receipt.commitState == .notAttempted)
+    }
+
+    let denying = ToolMutationConfirmationHandler { _ in .denied(reason: "No") }
+    do {
+      _ = try await ContactsTool(confirmation: denying).call(arguments: arguments)
+      Issue.record("Expected the denied creation to throw")
+    } catch let error as ToolMutationExecutionError {
+      #expect(error.receipt.status == .denied)
+      #expect(error.receipt.commitState == .notAttempted)
+      #expect(error.receipt.request.details.first?.value == "Alex")
+    }
+  }
+
   @Test("Denied Reminder deletion is marked destructive and never executes")
   func deniedReminderDeletionDoesNotExecute() async throws {
     let service = InMemoryRemindersService(reminders: [FoundationModelsToolsFixtures.reminder])
